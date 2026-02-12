@@ -14,6 +14,7 @@ import { AttachmentScannerService } from '../services/security/attachmentScanner
 import DomainWarmupService from '../services/domainWarmupService';
 import { DmarcReportService } from '../services/dmarcReportService';
 import { ensureAuditIndexes } from '../middleware/auditLog';
+import deletionRequestStore from '../stores/deletionRequestStore';
 
 interface IndexTask {
   name: string;
@@ -41,6 +42,7 @@ export const runAllIndexCreation = async (): Promise<void> => {
     { name: 'domainWarmup', fn: () => DomainWarmupService.getInstance().ensureIndexes() },
     { name: 'dmarcReport', fn: () => DmarcReportService.getInstance().ensureIndexes() },
     { name: 'auditLog', fn: () => ensureAuditIndexes() },
+    { name: 'deletionRequestStore', fn: () => deletionRequestStore.ensureIndexes() },
   ];
 
   logger.info('Running database index creation', { count: tasks.length });

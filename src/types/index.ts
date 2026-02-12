@@ -12,3 +12,6 @@ export * from './qdrant';
 
 // Re-export webhook types
 export type { SvixHeaders, InboundEmailWebhookPayload } from './webhooks';
+
+// Re-export deletion types
+export * from './deletion';

@@ -9,6 +9,7 @@ import dmarcRoutes from './dmarc';
 import deliveryMetricsRoutes from './deliveryMetrics';
 import searchRoutes from './search';
 import webhookDeliveryRoutes from './webhookDeliveries';
+import dataDeletionRoutes from './dataDeletion';
 
 const router = Router();
 
@@ -34,5 +35,6 @@ router.use('/dmarc', dmarcRoutes);
 router.use('/delivery', deliveryMetricsRoutes);
 router.use('/search', searchRoutes);
 router.use('/webhooks', webhookDeliveryRoutes);
+router.use('/data', dataDeletionRoutes);
 
 export default router;
