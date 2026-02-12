@@ -1,21 +1,46 @@
 import rateLimit from 'express-rate-limit';
 import { Request, Response } from 'express';
 import { getOrgTierLimits, TierType } from '../config/rateLimits';
+import { getCollection } from '../db';
+import type { Organization } from '../types';
+import logger from '../utils/logger';
 
 // In-memory store for rate limiting
 // Maps: "orgId:endpoint:window" -> number of requests
 const rateLimitStore = new Map<string, Array<{ timestamp: number }>>();
 
+// Cache org tiers in memory to avoid DB lookups on every request.
+// TTL: 5 minutes — balance between freshness and performance.
+const tierCache = new Map<string, { tier: TierType; expiresAt: number }>();
+const TIER_CACHE_TTL_MS = 5 * 60 * 1000;
+
 interface OrgRequest extends Request {
   orgId?: string;
-  user?: { orgId?: string };
+  user?: { orgId?: string; role?: string };
   apiKey?: { orgId?: string };
 }
 
-// Helper to get org tier from request
+// Look up the org's tier from DB with in-memory caching
 const getOrgTier = async (req: OrgRequest): Promise<TierType> => {
-  // TODO: In future, look up actual tier from database
-  // For now, everyone is on 'free' tier
+  const orgId = req.orgId || req.user?.orgId || req.apiKey?.orgId;
+  if (!orgId) return 'free';
+
+  // Check cache
+  const cached = tierCache.get(orgId);
+  if (cached && cached.expiresAt > Date.now()) return cached.tier;
+
+  try {
+    const orgs = await getCollection<Organization>('organizations');
+    if (orgs) {
+      const org = await orgs.findOne({ id: orgId }, { projection: { tier: 1 } });
+      const tier: TierType = (org?.tier as TierType) || 'free';
+      tierCache.set(orgId, { tier, expiresAt: Date.now() + TIER_CACHE_TTL_MS });
+      return tier;
+    }
+  } catch (error) {
+    logger.warn('Failed to look up org tier, defaulting to free', { orgId, error });
+  }
+
   return 'free';
 };
 
@@ -67,9 +92,10 @@ export const emailLimiter = rateLimit({
     return getOrgTierLimits(tier).emailsPerHour;
   },
   keyGenerator: orgKeyGenerator,
-  skip: (req: any) => {
-    // Skip rate limiting for authenticated admin requests
-    return req.user?.role === 'admin' && req.user?.email?.endsWith('@admin.local');
+  skip: async (req: any) => {
+    // Enterprise tier orgs are not rate-limited for email sending
+    const tier = await getOrgTier(req);
+    return tier === 'enterprise';
   },
   handler: (req: any, res: Response) => {
     const orgId = orgKeyGenerator(req as OrgRequest);
@@ -91,8 +117,9 @@ export const emailDailyLimiter = rateLimit({
     return getOrgTierLimits(tier).emailsPerDay;
   },
   keyGenerator: (req: any) => `${orgKeyGenerator(req as OrgRequest)}:daily`,
-  skip: (req: any) => {
-    return req.user?.role === 'admin' && req.user?.email?.endsWith('@admin.local');
+  skip: async (req: any) => {
+    const tier = await getOrgTier(req);
+    return tier === 'enterprise';
   },
   handler: (req: any, res: Response) => {
     res.status(429).json({

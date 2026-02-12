@@ -1,48 +1,56 @@
 import metricsCacheService from './metricsCacheService';
+import logger from '../utils/logger';
+
+// Track interval/timeout handles for proper shutdown
+const activeTimers: { intervals: NodeJS.Timeout[]; timeouts: NodeJS.Timeout[] } = {
+  intervals: [],
+  timeouts: [],
+};
 
 // Start the metrics cache refresh scheduler
 const startMetricsScheduler = (): void => {
-  console.log('🚀 Starting metrics cache scheduler');
-  
-  // Refresh cache every 15 minutes
-  setInterval(async () => {
+  logger.info('Starting metrics cache scheduler');
+
+  // Refresh cache every 30 minutes
+  const refreshInterval = setInterval(async () => {
     try {
-      console.log('🔄 Scheduled metrics cache refresh starting');
+      logger.debug('Scheduled metrics cache refresh starting');
       await metricsCacheService.refreshAllActiveInboxes();
-      console.log('✅ Scheduled metrics cache refresh completed');
+      logger.debug('Scheduled metrics cache refresh completed');
     } catch (error) {
-      console.error('❌ Error in scheduled metrics refresh:', error);
+      logger.error('Error in scheduled metrics refresh', { error });
     }
-  }, 30 * 60 * 1000); // 30 minutes
-  
-  // Cleanup cache every hour
-  setInterval(async () => {
+  }, 30 * 60 * 1000);
+  activeTimers.intervals.push(refreshInterval);
+
+  // Initial cache population on startup (after 5s to let DB connect)
+  const initTimeout = setTimeout(async () => {
     try {
-      console.log('🧹 Starting cache cleanup');
-      // Cache cleanup is handled automatically in metricsCacheService
-      console.log('✅ Cache cleanup completed');
-    } catch (error) {
-      console.error('❌ Error in cache cleanup:', error);
-    }
-  }, 60 * 60 * 1000); // 1 hour
-  
-  // Initial cache population on startup
-  setTimeout(async () => {
-    try {
-      console.log('🌱 Initial cache population starting');
+      logger.info('Initial metrics cache population starting');
       await metricsCacheService.refreshAllActiveInboxes();
-      console.log('✅ Initial cache population completed');
+      logger.info('Initial metrics cache population completed');
     } catch (error) {
-      console.error('❌ Error in initial cache population:', error);
+      logger.error('Error in initial cache population', { error });
     }
-  }, 5000); // 5 seconds after startup
+  }, 5000);
+  activeTimers.timeouts.push(initTimeout);
 };
 
-// Stop the scheduler (useful for testing/shutdown)
+// Stop the scheduler — clears all intervals and pending timeouts
 const stopMetricsScheduler = (): void => {
-  console.log('🛑 Stopping metrics cache scheduler');
-  // In a real implementation, you'd store the interval IDs and clear them
-  // For now, this is just a placeholder
+  logger.info('Stopping metrics cache scheduler');
+
+  for (const interval of activeTimers.intervals) {
+    clearInterval(interval);
+  }
+  for (const timeout of activeTimers.timeouts) {
+    clearTimeout(timeout);
+  }
+
+  activeTimers.intervals = [];
+  activeTimers.timeouts = [];
+
+  logger.info('Metrics cache scheduler stopped');
 };
 
 export default {

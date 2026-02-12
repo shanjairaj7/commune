@@ -1,12 +1,28 @@
 import crypto from 'crypto';
+import logger from '../utils/logger';
 
 // HMAC secret for encoding thread IDs into opaque routing tokens.
 // Falls back to a derivation of JWT_SECRET if THREAD_TOKEN_SECRET not set.
-const THREAD_TOKEN_SECRET = process.env.THREAD_TOKEN_SECRET ||
-  crypto.createHash('sha256')
-    .update(process.env.JWT_SECRET || 'commune-default-secret')
+const deriveThreadTokenSecret = (): string => {
+  if (process.env.THREAD_TOKEN_SECRET) return process.env.THREAD_TOKEN_SECRET;
+
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret) {
+    if (process.env.NODE_ENV === 'production') {
+      logger.error('FATAL: Neither THREAD_TOKEN_SECRET nor JWT_SECRET is set. Thread routing tokens will be insecure.');
+      process.exit(1);
+    }
+    logger.warn('JWT_SECRET not set — using development-only thread token secret. Do NOT use in production.');
+    return crypto.randomBytes(32).toString('hex');
+  }
+
+  return crypto.createHash('sha256')
+    .update(jwtSecret)
     .update('thread-routing')
     .digest('hex');
+};
+
+const THREAD_TOKEN_SECRET = deriveThreadTokenSecret();
 
 /**
  * In-memory mapping from short token → thread_id.

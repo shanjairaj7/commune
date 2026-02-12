@@ -1,6 +1,8 @@
 import { Request, Response, NextFunction } from 'express';
 import { getRedisClient, isRedisAvailable } from './redis';
 import { getOrgTierLimits, TierType } from '../config/rateLimits';
+import { getCollection } from '../db';
+import type { Organization } from '../types';
 import logger from '../utils/logger';
 
 // ─── Lua Scripts ────────────────────────────────────────────────────────────
@@ -117,8 +119,31 @@ interface OrgRequest extends Request {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-const getOrgTier = async (_req: OrgRequest): Promise<TierType> => {
-  // TODO: Look up actual tier from database
+
+// Cache org tiers in memory to avoid DB lookups on every request.
+// TTL: 5 minutes — balance between freshness and performance.
+const tierCache = new Map<string, { tier: TierType; expiresAt: number }>();
+const TIER_CACHE_TTL_MS = 5 * 60 * 1000;
+
+const getOrgTier = async (req: OrgRequest): Promise<TierType> => {
+  const orgId = req.orgId || req.user?.orgId || req.apiKey?.orgId;
+  if (!orgId) return 'free';
+
+  const cached = tierCache.get(orgId);
+  if (cached && cached.expiresAt > Date.now()) return cached.tier;
+
+  try {
+    const orgs = await getCollection<Organization>('organizations');
+    if (orgs) {
+      const org = await orgs.findOne({ id: orgId }, { projection: { tier: 1 } });
+      const tier: TierType = (org?.tier as TierType) || 'free';
+      tierCache.set(orgId, { tier, expiresAt: Date.now() + TIER_CACHE_TTL_MS });
+      return tier;
+    }
+  } catch (error) {
+    logger.warn('Failed to look up org tier, defaulting to free', { orgId, error });
+  }
+
   return 'free';
 };
 
@@ -126,8 +151,9 @@ const getOrgId = (req: OrgRequest): string => {
   return req.orgId || req.user?.orgId || req.apiKey?.orgId || 'anonymous';
 };
 
-const isAdmin = (req: OrgRequest): boolean => {
-  return req.user?.role === 'admin' && (req.user?.email?.endsWith('@admin.local') || false);
+const shouldSkipRateLimit = async (req: OrgRequest): Promise<boolean> => {
+  const tier = await getOrgTier(req);
+  return tier === 'enterprise';
 };
 
 // ─── Rate limiter factory ───────────────────────────────────────────────────
@@ -141,7 +167,7 @@ interface RateLimiterOptions {
 
 const createRateLimiter = (opts: RateLimiterOptions) => {
   return async (req: OrgRequest, res: Response, next: NextFunction) => {
-    if (isAdmin(req)) return next();
+    if (await shouldSkipRateLimit(req)) return next();
 
     const keyId = opts.keyGenerator ? opts.keyGenerator(req) : getOrgId(req);
     const max = await opts.getMax(req);
@@ -217,7 +243,7 @@ const memoryBurstStore = new Map<string, number[]>();
 
 export const createBurstDetector = (config: BurstConfig = DEFAULT_BURST_CONFIG) => {
   return async (req: OrgRequest, res: Response, next: NextFunction) => {
-    if (isAdmin(req)) return next();
+    if (await shouldSkipRateLimit(req)) return next();
 
     const orgId = getOrgId(req);
     const key = `${config.keyPrefix}:${orgId}`;

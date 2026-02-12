@@ -131,7 +131,7 @@ Two authentication paths serve different consumers (`src/middleware/`):
 - `lastUsedAt` updated on each request for auditing
 
 ### Security Bootstrap
-Before the server starts, `src/lib/securityBootstrap.ts` validates:
+Before the server starts, `src/boot/securityBootstrap.ts` validates:
 - `JWT_SECRET` exists and isn't in the known-insecure list (e.g., "changeme", "secret")
 - `JWT_SECRET` is at least 32 characters
 - `EMAIL_ENCRYPTION_KEY` is exactly 64 hex characters

@@ -1,12 +1,28 @@
 import crypto from 'crypto';
+import logger from '../utils/logger';
 
 // Use a separate secret for unsubscribe tokens.
 // Falls back to a derivation of JWT_SECRET if UNSUBSCRIBE_SECRET not set.
-const UNSUBSCRIBE_SECRET = process.env.UNSUBSCRIBE_SECRET ||
-  crypto.createHash('sha256')
-    .update(process.env.JWT_SECRET || 'commune-default-secret')
+const deriveUnsubscribeSecret = (): string => {
+  if (process.env.UNSUBSCRIBE_SECRET) return process.env.UNSUBSCRIBE_SECRET;
+
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret) {
+    if (process.env.NODE_ENV === 'production') {
+      logger.error('FATAL: Neither UNSUBSCRIBE_SECRET nor JWT_SECRET is set. Unsubscribe tokens will be insecure.');
+      process.exit(1);
+    }
+    logger.warn('JWT_SECRET not set — using development-only unsubscribe secret. Do NOT use in production.');
+    return crypto.randomBytes(32).toString('hex');
+  }
+
+  return crypto.createHash('sha256')
+    .update(jwtSecret)
     .update('unsubscribe')
     .digest('hex');
+};
+
+const UNSUBSCRIBE_SECRET = deriveUnsubscribeSecret();
 
 export interface UnsubscribePayload {
   orgId: string;

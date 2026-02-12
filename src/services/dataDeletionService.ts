@@ -4,7 +4,7 @@ import type { DeletionScope, DeletionPreview, DeletionRequest } from '../types';
 import logger from '../utils/logger';
 import deletionRequestStore from '../stores/deletionRequestStore';
 
-const CONFIRMATION_TOKEN_SECRET = process.env.JWT_SECRET || 'change-me';
+const CONFIRMATION_TOKEN_SECRET = process.env.JWT_SECRET || '';
 const CONFIRMATION_EXPIRY_MS = 60 * 60 * 1000; // 1 hour
 
 // ── Token helpers ──────────────────────────────────────────────────────
