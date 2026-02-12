@@ -785,3 +785,133 @@ Requests are rate-limited per API key. If you exceed the limit, you'll receive a
 ```
 
 Back off and retry after a short delay.
+
+---
+
+## Data Deletion
+
+Two-phase deletion API with safety mechanisms. No data is deleted until you explicitly confirm with a time-limited token.
+
+**Required permission:** `admin` or `data:delete`
+
+### Scopes
+
+| Scope | What it deletes |
+|-------|----------------|
+| `organization` | Everything — messages, attachments, domains, inboxes, users, API keys, sessions, audit logs, the organization itself |
+| `inbox` | All data for a specific inbox — messages, attachments, delivery events, webhook deliveries, suppressions |
+| `messages` | Messages and their attachments only, with optional `before` date filter |
+
+### Step 1: Create Deletion Request
+
+```
+POST /v1/data/deletion-request
+```
+
+```json
+{
+  "scope": "organization"
+}
+```
+
+For inbox-scoped deletion:
+```json
+{
+  "scope": "inbox",
+  "inbox_id": "inbox_abc123"
+}
+```
+
+For messages with a date filter:
+```json
+{
+  "scope": "messages",
+  "before": "2025-01-01T00:00:00Z"
+}
+```
+
+**Response (201):**
+
+```json
+{
+  "id": "del_a1b2c3d4e5f6g7h8i9j0",
+  "scope": "organization",
+  "status": "pending",
+  "preview": {
+    "messages": 1423,
+    "attachments": 89,
+    "domains": 2,
+    "inboxes": 5,
+    "webhook_deliveries": 312,
+    "delivery_events": 1891,
+    "blocked_spam": 47,
+    "thread_metadata": 203,
+    "dmarc_reports": 12,
+    "alerts": 3,
+    "suppressions": 28,
+    "spam_reports": 0,
+    "audit_logs": 4521,
+    "users": 2,
+    "api_keys": 3,
+    "sessions": 1,
+    "verification_tokens": 0
+  },
+  "confirmation_token": "a8f2e1d4c7b6...",
+  "confirm_by": "2025-06-15T13:00:00.000Z",
+  "warning": "This will permanently delete ALL data for your organization including users, API keys, and the organization itself. This action cannot be undone."
+}
+```
+
+The `preview` shows exactly how many documents will be deleted per collection. The `confirmation_token` expires after 1 hour.
+
+### Step 2: Confirm Deletion
+
+Review the preview. If you're sure, confirm with the token:
+
+```
+POST /v1/data/deletion-request/del_a1b2c3d4e5f6g7h8i9j0/confirm
+```
+
+```json
+{
+  "confirmation_token": "a8f2e1d4c7b6..."
+}
+```
+
+**Response (200):**
+
+```json
+{
+  "id": "del_a1b2c3d4e5f6g7h8i9j0",
+  "scope": "organization",
+  "status": "completed",
+  "preview": { "..." },
+  "deleted_counts": {
+    "messages": 1423,
+    "attachments": 89,
+    "domains": 2,
+    "inboxes": 5,
+    "webhook_deliveries": 312,
+    "delivery_events": 1891,
+    "users": 2,
+    "api_keys": 3
+  },
+  "confirmed_at": "2025-06-15T12:05:00.000Z",
+  "completed_at": "2025-06-15T12:05:03.000Z"
+}
+```
+
+### Step 3: Check Status (Optional)
+
+```
+GET /v1/data/deletion-request/del_a1b2c3d4e5f6g7h8i9j0
+```
+
+### Safety Mechanisms
+
+- **Preview before delete** — exact document counts shown before any data is touched
+- **Confirmation token** — HMAC-signed, tied to the specific request, cannot be guessed
+- **1-hour expiry** — stale requests automatically expire
+- **One active request per org** — no concurrent deletion races
+- **Permission gated** — requires `admin` or `data:delete` API key permission
+- **Audit logged** — the deletion event is logged before audit logs are purged
