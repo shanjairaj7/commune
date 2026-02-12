@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Commune - Communication Infrastructure for Agents</title>
+    <meta
+      name="description"
+      content="Bring your agent to where humans work. Communication infrastructure for agents across email and Slack."
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="nav">
+        <div class="logo">
+          <div class="logo-mark">c</div>
+          <span>commune</span>
+        </div>
+        <nav class="nav-links">
+          <a href="#how">How it works</a>
+          <a href="#message">Message model</a>
+          <a href="#trust">Trust</a>
+          <a href="#docs">Docs</a>
+        </nav>
+        <div class="nav-cta">
+          <button class="btn ghost">Login</button>
+          <button class="btn primary">Get a demo</button>
+        </div>
+      </header>
+
+      <main>
+        <section class="hero">
+          <div class="hero-copy">
+            <div class="pill">Communication runtime for agents</div>
+            <h1>Bring your agent to where humans work.</h1>
+            <p>
+              Communication infrastructure for agents that unifies Slack and email into a
+              single message model, with safe routing, threading, and reply semantics.
+            </p>
+            <div class="hero-actions">
+              <button class="btn primary">Talk to us</button>
+              <button class="btn ghost">Read the docs</button>
+            </div>
+            <div class="hero-meta">
+              <div>
+                <span class="meta-label">10 min</span>
+                <span class="meta-text">to first webhook</span>
+              </div>
+              <div>
+                <span class="meta-label">1 model</span>
+                <span class="meta-text">for all channels</span>
+              </div>
+              <div>
+                <span class="meta-label">2 paths</span>
+                <span class="meta-text">inbound + outbound</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="hero-stage" data-step="inbound">
+            <div class="stage-layer stage-base"></div>
+
+            <div class="stage-card card-payload">
+              <div class="card-title">Unified Message</div>
+              <div class="payload">
+                <div class="payload-row">
+                  <span>channel</span>
+                  <strong class="payload-val">slack</strong>
+                </div>
+                <div class="payload-row">
+                  <span>thread_id</span>
+                  <strong class="payload-val">1717.2931.02</strong>
+                </div>
+                <div class="payload-row">
+                  <span>participants</span>
+                  <strong class="payload-val">@maya, @agent</strong>
+                </div>
+                <div class="payload-row">
+                  <span>content</span>
+                  <strong class="payload-val">"Can you draft a Q3 update?"</strong>
+                </div>
+                <div class="payload-row">
+                  <span>attachments</span>
+                  <strong class="payload-val">pending</strong>
+                </div>
+              </div>
+              <div class="payload-dot"></div>
+            </div>
+
+            <div class="stage-card card-slack">
+              <div class="card-title">Slack Thread</div>
+              <div class="slack-thread">
+                <div class="slack-msg">
+                  <span class="avatar">M</span>
+                  <div>
+                    <div class="slack-name">Maya</div>
+                    <div class="slack-text">
+                      @agent can you draft a Q3 update and share in-thread?
+                    </div>
+                  </div>
+                </div>
+                <div class="slack-msg reply">
+                  <span class="avatar agent">A</span>
+                  <div>
+                    <div class="slack-name">agent</div>
+                    <div class="slack-text">
+                      Working on it. Will share a deck + summary.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="stage-card card-webhook">
+              <div class="card-title">Webhook Handler</div>
+              <pre class="code">
+const event = commune.webhook(payload)
+
+if (event.channel === "slack") {
+  const thread = commune.thread(event.thread_id)
+  const context = await thread.getMessages(50)
+  const deck = await agent.buildDeck(context)
+
+  await commune.reply({
+    thread_id: event.thread_id,
+    attachments: [deck]
+  })
+}
+              </pre>
+            </div>
+
+            <div class="stage-card card-agent">
+              <div class="card-title">Agent Runtime</div>
+              <div class="agent-status">
+                <div class="agent-chip">processing</div>
+                <div class="agent-text">Synthesizing thread context...</div>
+                <div class="artifact">
+                  <div class="artifact-title">Q3 Incident Update</div>
+                  <div class="artifact-sub">Slides + spreadsheet</div>
+                  <div class="artifact-grid">
+                    <div></div>
+                    <div></div>
+                    <div></div>
+                    <div></div>
+                    <div></div>
+                    <div></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="stage-card card-email">
+              <div class="card-title">Email Reply</div>
+              <div class="email">
+                <div class="email-row">
+                  <span>From</span>
+                  <strong>agent@acme.ai</strong>
+                </div>
+                <div class="email-row">
+                  <span>To</span>
+                  <strong>ops@acme.ai</strong>
+                </div>
+                <div class="email-body">
+                  Attached is the Q3 update deck + sheet. Let me know if you want
+                  a summary for the status page.
+                </div>
+                <div class="attachment">
+                  <div class="attachment-icon">.pptx</div>
+                  <div>
+                    <div>Q3-update-deck</div>
+                    <span>2 files attached</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="stage-card card-channel">
+              <div class="card-title">Email Inbound</div>
+              <div class="email inbound">
+                <div class="email-row">
+                  <span>From</span>
+                  <strong>incidents@status.acme.io</strong>
+                </div>
+                <div class="email-row">
+                  <span>Subject</span>
+                  <strong>Weekly incident log</strong>
+                </div>
+                <div class="email-body">
+                  8 incidents reported. Need a short summary and a slide for leadership.
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="how" class="section">
+          <div class="section-heading">
+            <h2>How it works</h2>
+            <p>One loop, one schema, one place to deliver and respond safely.</p>
+          </div>
+          <div class="grid-3">
+            <div class="card">
+              <h3>Receive</h3>
+              <p>Webhook intake for Slack and email. Verify signatures, parse data, and store raw payloads.</p>
+            </div>
+            <div class="card">
+              <h3>Normalize</h3>
+              <p>Every message becomes a single shape with thread_id, participants, and content.</p>
+            </div>
+            <div class="card">
+              <h3>Respond</h3>
+              <p>Reply in-thread with attachments and clear attribution, across channels.</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="message" class="section">
+          <div class="section-heading">
+            <h2>Unified message model</h2>
+            <p>No channel-specific logic. Your agent always receives the same payload.</p>
+          </div>
+          <div class="model">
+            <div class="model-meta">
+              <h3>Agent-ready payload</h3>
+              <p>Stable fields for routing, permissions, and thread context. Built for async work.</p>
+              <ul>
+                <li>thread-first storage with reliable reply semantics</li>
+                <li>consistent identity across channels</li>
+                <li>attachments tracked separately for safe retrieval</li>
+              </ul>
+            </div>
+            <pre class="code dark">
+{
+  "channel": "slack",
+  "message_id": "1717.2931.02",
+  "thread_id": "1717.2931.02",
+  "direction": "inbound",
+  "participants": [
+    { "role": "sender", "identity": "U02M" },
+    { "role": "mentioned", "identity": "agent" }
+  ],
+  "content": "Can you draft a Q3 update?",
+  "attachments": ["att_91"],
+  "metadata": { "created_at": "2025-01-13T10:21:04Z" }
+}
+            </pre>
+          </div>
+        </section>
+
+        <section id="trust" class="section">
+          <div class="section-heading">
+            <h2>Enterprise-grade by default</h2>
+            <p>Everything you need to keep agents safe and accountable.</p>
+          </div>
+          <div class="grid-3">
+            <div class="card">
+              <h3>Policy gates</h3>
+              <p>Approval workflows, role rules, and routing constraints before sending.</p>
+            </div>
+            <div class="card">
+              <h3>Audit trails</h3>
+              <p>Every inbound and outbound message is logged with canonical history.</p>
+            </div>
+            <div class="card">
+              <h3>Deliverability</h3>
+              <p>Domain verification, DMARC setup, and safe routing baked in.</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="docs" class="section cta">
+          <div>
+            <h2>Ship agent communication in days, not months.</h2>
+            <p>Bring your agent to where humans work, with a runtime you can trust.</p>
+          </div>
+          <div class="cta-actions">
+            <button class="btn primary">Request access</button>
+            <button class="btn ghost">View docs</button>
+          </div>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <div>commune</div>
+        <div>security@commune.dev</div>
+      </footer>
+    </div>
+    <script src="/app.js"></script>
+  </body>
+</html>

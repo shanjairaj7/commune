@@ -1,0 +1,120 @@
+import { Router, json } from 'express';
+import { requirePermission } from '../../middleware/permissions';
+import messageStore from '../../stores/messageStore';
+import deliveryEventStore from '../../stores/deliveryEventStore';
+import suppressionStore from '../../stores/suppressionStore';
+import logger from '../../utils/logger';
+
+const router = Router();
+
+/**
+ * GET /v1/delivery/metrics
+ * Get delivery metrics for an inbox over a time period.
+ * Query: inbox_id (required), days (optional, default 7)
+ */
+router.get('/metrics', json(), requirePermission('messages:read'), async (req: any, res) => {
+  const orgId = req.orgId;
+  const inboxId = req.query.inbox_id as string;
+  const domainId = req.query.domain_id as string;
+
+  // Accept both "days=7" and "period=7d/24h/30d" formats
+  let days = 7;
+  const period = req.query.period as string;
+  if (period) {
+    const match = period.match(/^(\d+)(d|h)$/);
+    if (match) {
+      days = match[2] === 'h' ? Math.max(1, Math.ceil(parseInt(match[1]) / 24)) : parseInt(match[1]);
+    }
+  } else if (req.query.days) {
+    days = parseInt(req.query.days as string) || 7;
+  }
+  days = Math.min(days, 90);
+
+  if (!inboxId && !domainId) {
+    return res.status(400).json({ error: 'inbox_id or domain_id query parameter is required' });
+  }
+
+  try {
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    const metrics = await messageStore.getInboxDeliveryMetrics(inboxId, startDate, endDate, domainId);
+
+    return res.json({
+      data: {
+        inbox_id: inboxId || undefined,
+        domain_id: domainId || undefined,
+        period: { start: startDate.toISOString(), end: endDate.toISOString(), days },
+        ...metrics,
+        delivery_rate: metrics.sent > 0
+          ? ((metrics.delivered / metrics.sent) * 100).toFixed(1) + '%'
+          : 'N/A',
+        bounce_rate: metrics.sent > 0
+          ? ((metrics.bounced / metrics.sent) * 100).toFixed(1) + '%'
+          : 'N/A',
+        complaint_rate: metrics.sent > 0
+          ? ((metrics.complained / metrics.sent) * 100).toFixed(1) + '%'
+          : 'N/A',
+        failure_rate: metrics.sent > 0
+          ? ((metrics.failed / metrics.sent) * 100).toFixed(1) + '%'
+          : 'N/A',
+        suppression_rate: metrics.sent > 0
+          ? ((metrics.suppressed / metrics.sent) * 100).toFixed(1) + '%'
+          : 'N/A',
+        orphan_event_rate: metrics.sent > 0
+          ? ((metrics.orphan_events / metrics.sent) * 100).toFixed(1) + '%'
+          : 'N/A',
+      },
+    });
+  } catch (err) {
+    logger.error('v1: Failed to get delivery metrics', { orgId, inboxId, error: err });
+    return res.status(500).json({ error: 'Failed to get delivery metrics' });
+  }
+});
+
+/**
+ * GET /v1/delivery/events
+ * List recent delivery events for an inbox.
+ * Query: inbox_id (required), event_type (optional), limit (optional, default 50)
+ */
+router.get('/events', json(), requirePermission('messages:read'), async (req: any, res) => {
+  const inboxId = req.query.inbox_id as string;
+  const eventType = req.query.event_type as string | undefined;
+  const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
+
+  if (!inboxId) {
+    return res.status(400).json({ error: 'inbox_id query parameter is required' });
+  }
+
+  try {
+    const events = await deliveryEventStore.getInboxEvents(inboxId, eventType, limit);
+    return res.json({ data: events });
+  } catch (err) {
+    logger.error('v1: Failed to get delivery events', { inboxId, error: err });
+    return res.status(500).json({ error: 'Failed to get delivery events' });
+  }
+});
+
+/**
+ * GET /v1/delivery/suppressions
+ * List suppressed email addresses for an inbox.
+ * Query: inbox_id (required)
+ */
+router.get('/suppressions', json(), requirePermission('messages:read'), async (req: any, res) => {
+  const inboxId = req.query.inbox_id as string;
+
+  if (!inboxId) {
+    return res.status(400).json({ error: 'inbox_id query parameter is required' });
+  }
+
+  try {
+    const suppressions = await suppressionStore.getInboxSuppressions(inboxId);
+    return res.json({ data: suppressions });
+  } catch (err) {
+    logger.error('v1: Failed to get suppressions', { inboxId, error: err });
+    return res.status(500).json({ error: 'Failed to get suppressions' });
+  }
+});
+
+export default router;
