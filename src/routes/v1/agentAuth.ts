@@ -5,10 +5,12 @@ import logger from '../../utils/logger';
 
 const router = Router();
 
-// 3 registration attempts per IP per hour
+// 10 registration attempts per IP per hour.
+// Each registration sends an OTP email and creates org/user records,
+// so we limit to prevent abuse. The OTP itself is limited to 5 attempts.
 const registerRateLimit = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: 3,
+  max: 10,
   message: { error: 'Too many registration attempts. Try again in 1 hour.' },
   standardHeaders: true,
   legacyHeaders: false,
