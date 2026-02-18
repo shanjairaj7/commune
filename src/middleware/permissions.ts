@@ -67,6 +67,12 @@ export const requirePermission = (...scopes: PermissionScope[]) => {
       return next();
     }
 
+    // Agent signing auth — agents are org owners (created org during registration)
+    // and have full access to their own org's resources
+    if (req.authType === 'agent') {
+      return next();
+    }
+
     // For API key auth, check permissions
     const apiKeyData = req.apiKeyData;
     if (!apiKeyData) {
