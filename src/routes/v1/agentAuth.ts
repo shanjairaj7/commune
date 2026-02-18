@@ -5,18 +5,17 @@ import logger from '../../utils/logger';
 
 const router = Router();
 
-// 10 registration attempts per IP per hour.
-// Each registration sends an OTP email and creates org/user records,
-// so we limit to prevent abuse. The OTP itself is limited to 5 attempts.
+// 5 registrations per IP per day — each requires a unique keypair + signs a challenge,
+// making mass registration expensive. Legitimate agents need very few registrations.
 const registerRateLimit = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 10,
-  message: { error: 'Too many registration attempts. Try again in 1 hour.' },
+  windowMs: 24 * 60 * 60 * 1000,
+  max: 5,
+  message: { error: 'Too many registration attempts. Try again tomorrow.' },
   standardHeaders: true,
   legacyHeaders: false,
 });
 
-// 10 OTP verify attempts per IP per 15 minutes
+// 10 challenge-verify attempts per IP per 15 minutes
 const verifyRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
@@ -28,29 +27,30 @@ const verifyRateLimit = rateLimit({
 /**
  * POST /v1/auth/agent-register
  *
- * Agent sends public key + metadata. Returns agentSignupToken.
- * OTP sent to verifierEmail (human owner).
+ * Agent sends public key + org details.
+ * Returns agentSignupToken + a challenge the agent must sign with their private key.
+ * No email required. No human verifier.
  *
  * Body:
- *   agentName:     string   — display name for this agent
- *   agentEmail:    string   — agent's email address
- *   orgName:       string   — organization name
- *   orgSlug:       string   — organization URL slug (unique)
- *   publicKey:     string   — base64-encoded raw 32-byte Ed25519 public key
- *   verifierEmail: string   — human owner's email (receives OTP)
+ *   agentName:  string — display name for this agent
+ *   orgName:    string — organization name
+ *   orgSlug:    string — organization URL slug (unique, becomes inbox localPart)
+ *   publicKey:  string — base64-encoded raw 32-byte Ed25519 public key
+ *
+ * Anti-spam: each public key can only register once; rate limited 5/IP/day;
+ * verification requires signing the challenge with the matching private key.
  */
 router.post('/agent-register', registerRateLimit, async (req: Request, res: Response) => {
-  const { agentName, agentEmail, orgName, orgSlug, publicKey, verifierEmail } = req.body;
+  const { agentName, orgName, orgSlug, publicKey } = req.body;
 
-  if (!agentName || !agentEmail || !orgName || !orgSlug || !publicKey || !verifierEmail) {
+  if (!agentName || !orgName || !orgSlug || !publicKey) {
     return res.status(400).json({
       error: 'missing_fields',
-      message: 'Required: agentName, agentEmail, orgName, orgSlug, publicKey, verifierEmail',
+      message: 'Required: agentName, orgName, orgSlug, publicKey',
     });
   }
 
   // Base64 of exactly 32 bytes = 43 data chars + 1 trailing '=' = 44 chars total
-  // Service re-validates by actually decoding and checking byte length
   if (typeof publicKey !== 'string' || publicKey.length !== 44 || !/^[A-Za-z0-9+/]{43}=$/.test(publicKey)) {
     return res.status(400).json({
       error: 'invalid_public_key',
@@ -68,26 +68,22 @@ router.post('/agent-register', registerRateLimit, async (req: Request, res: Resp
   try {
     const result = await AgentIdentityService.registerAgent({
       agentName: agentName.trim(),
-      agentEmail: agentEmail.trim().toLowerCase(),
       orgName: orgName.trim(),
       orgSlug: orgSlug.trim().toLowerCase(),
       publicKey,
-      verifierEmail: verifierEmail.trim().toLowerCase(),
     });
 
     return res.status(201).json({
       agentSignupToken: result.agentSignupToken,
-      message: `A 6-digit OTP has been sent to ${verifierEmail}. Submit it to POST /v1/auth/agent-verify.`,
-      expiresIn: result.expiresIn,
+      challenge: result.challenge,
+      message: 'Sign the challenge with your private key and submit to POST /v1/auth/agent-verify.',
+      expiresIn: 900,
     });
   } catch (err: any) {
     if (err.code === 'INVALID_PUBLIC_KEY') {
       return res.status(400).json({ error: 'invalid_public_key', message: err.message });
     }
-    if (err.code === 'EMAIL_EXISTS') {
-      return res.status(409).json({ error: 'email_exists', message: 'This email is already registered' });
-    }
-    if (err.message?.includes('Organization slug already exists')) {
+    if (err.message?.includes('Organization slug already exists') || err.message?.includes('slug')) {
       return res.status(409).json({ error: 'slug_exists', message: 'This org slug is already taken' });
     }
     logger.error('Agent registration error', { err });
@@ -98,58 +94,58 @@ router.post('/agent-register', registerRateLimit, async (req: Request, res: Resp
 /**
  * POST /v1/auth/agent-verify
  *
- * Agent submits the OTP that the human verifier received.
- * Returns agentId (COMMUNE_AGENT_ID) to store permanently.
+ * Agent signs the challenge from /agent-register with their private key and submits it.
+ * Server verifies the signature against the stored public key.
+ * On success: activates account, auto-provisions inbox at orgSlug@commune.email, returns agentId.
  *
  * Body:
  *   agentSignupToken: string — from the /agent-register response
- *   otp:              string — 6-digit code from verifier's email
+ *   signature:        string — base64 Ed25519 signature of the challenge string
  */
 router.post('/agent-verify', verifyRateLimit, async (req: Request, res: Response) => {
-  const { agentSignupToken, otp } = req.body;
+  const { agentSignupToken, signature } = req.body;
 
-  if (!agentSignupToken || !otp) {
+  if (!agentSignupToken || !signature) {
     return res.status(400).json({
       error: 'missing_fields',
-      message: 'Required: agentSignupToken, otp',
+      message: 'Required: agentSignupToken, signature',
     });
   }
 
-  if (!/^\d{6}$/.test(String(otp))) {
+  if (typeof signature !== 'string') {
     return res.status(400).json({
-      error: 'invalid_otp_format',
-      message: 'OTP must be a 6-digit number',
+      error: 'invalid_signature_format',
+      message: 'signature must be a base64-encoded Ed25519 signature string',
     });
   }
 
   try {
-    const result = await AgentIdentityService.verifyAgentOtp({
+    const result = await AgentIdentityService.verifyAgentChallenge({
       agentSignupToken,
-      otp: String(otp),
+      signature,
     });
 
     return res.status(200).json({
       agentId: result.agentId,
       orgId: result.orgId,
+      inboxEmail: result.inboxEmail,
       message: [
-        'Registration complete. Store these environment variables:',
+        'Registration complete. Store these permanently:',
         `  export COMMUNE_AGENT_ID="${result.agentId}"`,
         '  export COMMUNE_PRIVATE_KEY="<your_private_key_base64>"',
         '',
-        'Sign every request with: Authorization: Agent {COMMUNE_AGENT_ID}:{ed25519_signature}',
+        `Your inbox is ready: ${result.inboxEmail}`,
+        'Sign every request: Authorization: Agent {COMMUNE_AGENT_ID}:{ed25519_signature}',
       ].join('\n'),
     });
   } catch (err: any) {
     if (err.code === 'INVALID_TOKEN') {
       return res.status(401).json({ error: 'invalid_token', message: 'Invalid or expired signup token' });
     }
-    if (err.code === 'MAX_ATTEMPTS') {
-      return res.status(429).json({ error: 'max_attempts', message: err.message });
+    if (err.code === 'INVALID_SIGNATURE') {
+      return res.status(401).json({ error: 'invalid_signature', message: err.message });
     }
-    if (err.code === 'INVALID_OTP') {
-      return res.status(401).json({ error: 'invalid_otp', message: err.message });
-    }
-    logger.error('Agent OTP verification error', { err });
+    logger.error('Agent challenge verification error', { err });
     return res.status(500).json({ error: 'verification_failed', message: 'Verification failed' });
   }
 });

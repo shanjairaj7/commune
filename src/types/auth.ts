@@ -80,3 +80,39 @@ export interface Session {
   lastAccessAt: string;
   createdAt: string;
 }
+
+// Agent signing standard types
+
+export interface AgentIdentity {
+  id: string;           // "agt_<32hex>" — stored as COMMUNE_AGENT_ID by the agent
+  agentName: string;
+  inboxEmail?: string;  // auto-provisioned at registration: orgSlug@commune.email
+  publicKey: string;    // base64-encoded raw 32-byte Ed25519 public key
+  orgId: string;
+  userId: string;
+  status: 'active' | 'revoked';
+  createdAt: string;
+  lastUsedAt?: string;
+  revokedAt?: string;
+}
+
+export interface AgentSignup {
+  id: string;
+  agentSignupToken: string; // opaque token returned to agent after POST /v1/auth/agent-register
+  agentName: string;
+  orgName: string;
+  orgSlug: string;
+  publicKey: string;    // base64-encoded public key — used to verify the challenge signature
+  challenge: string;    // server-issued random nonce the agent must sign with their private key
+  status: 'pending' | 'verified' | 'expired';
+  expiresAt: string;    // 15-minute TTL
+  createdAt: string;
+  // Set atomically during registerAgent so verifyAgentChallenge never needs a second DB fetch
+  userId: string;
+  orgId: string;
+}
+
+export interface AgentSignatureNonce {
+  _id: string;    // "{agentId}:{timestampMs}" — unique constraint is the replay guard
+  expiresAt: Date;
+}

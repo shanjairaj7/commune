@@ -40,6 +40,39 @@ const sendEmail = async (payload: {
 };
 
 export class UserService {
+  /**
+   * Creates a user record for an agent (no password, no email verification email).
+   * Verification is handled via the agent OTP flow, not the standard email link.
+   */
+  static async registerAgentUser(data: {
+    orgId: string;
+    email: string;
+    name: string;
+  }): Promise<{ user: User }> {
+    const collection = await getCollection<User>('users');
+    if (!collection) throw new Error('Database not available');
+
+    const existingUser = await collection.findOne({ email: data.email });
+    if (existingUser) throw new Error('User already exists');
+
+    const user: User = {
+      id: randomBytes(16).toString('hex'),
+      orgId: data.orgId,
+      email: data.email,
+      name: data.name,
+      role: 'admin',
+      status: 'pending',
+      emailVerified: false,
+      passwordHash: '',       // agents authenticate via Ed25519 signature, not password
+      provider: 'email',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    await collection.insertOne(user);
+    return { user };
+  }
+
   static async registerUser(data: {
     orgId: string;
     email: string;

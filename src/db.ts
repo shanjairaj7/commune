@@ -1,5 +1,5 @@
 import { MongoClient, type Db, type Collection, type Document } from 'mongodb';
-import type { Organization, User, ApiKey, EmailVerificationToken, Session } from './types';
+import type { Organization, User, ApiKey, EmailVerificationToken, Session, AgentIdentity, AgentSignup, AgentSignatureNonce } from './types';
 
 const uri = process.env.MONGO_URL;
 let client: MongoClient | null = null;
@@ -107,4 +107,24 @@ export const setupCollections = async (db: Db) => {
   ]);
 
   await db.collection('domains').createIndex({ orgId: 1 });
+
+  // Agent signing standard collections
+  await db.createCollection<AgentIdentity>('agent_identities');
+  await db.collection('agent_identities').createIndexes([
+    { key: { id: 1 }, unique: true },
+    { key: { orgId: 1 } },
+    { key: { agentEmail: 1 } },
+    { key: { status: 1 } }
+  ]);
+
+  await db.createCollection<AgentSignup>('agent_signups');
+  await db.collection('agent_signups').createIndexes([
+    { key: { agentSignupToken: 1 }, unique: true },
+    { key: { expiresAt: 1 }, expireAfterSeconds: 0 }  // TTL: auto-delete after expiry
+  ]);
+
+  await db.createCollection<AgentSignatureNonce>('agent_signature_nonces');
+  await db.collection('agent_signature_nonces').createIndexes([
+    { key: { expiresAt: 1 }, expireAfterSeconds: 0 }  // TTL: auto-delete after 2 minutes
+  ]);
 };
