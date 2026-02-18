@@ -16,6 +16,8 @@ import { DmarcReportService } from '../services/dmarcReportService';
 import { ensureAuditIndexes } from '../middleware/auditLog';
 import deletionRequestStore from '../stores/deletionRequestStore';
 import TokenGuard from '../lib/tokenGuard';
+import { AgentIdentityStore } from '../stores/agentIdentityStore';
+import { AgentSignupStore } from '../stores/agentSignupStore';
 
 interface IndexTask {
   name: string;
@@ -45,6 +47,8 @@ export const runAllIndexCreation = async (): Promise<void> => {
     { name: 'auditLog', fn: () => ensureAuditIndexes() },
     { name: 'deletionRequestStore', fn: () => deletionRequestStore.ensureIndexes() },
     { name: 'tokenGuard', fn: () => TokenGuard.ensureIndexes() },
+    { name: 'agentIdentityStore', fn: () => AgentIdentityStore.ensureIndexes() },
+    { name: 'agentSignupStore', fn: () => AgentSignupStore.ensureIndexes() },
   ];
 
   logger.info('Running database index creation', { count: tasks.length });
