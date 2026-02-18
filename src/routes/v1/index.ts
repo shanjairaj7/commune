@@ -1,5 +1,7 @@
 import { Router } from 'express';
-import { apiKeyAuth } from '../../middleware/apiKeyAuth';
+import { v1CombinedAuth } from '../../middleware/agentSignatureAuth';
+import agentAuthRoutes from './agentAuth';
+import agentManagementRoutes from './agentManagement';
 import domainRoutes from './domains';
 import inboxRoutes from './inboxes';
 import threadRoutes from './threads';
@@ -13,21 +15,30 @@ import dataDeletionRoutes from './dataDeletion';
 
 const router = Router();
 
-// All v1 routes require API key authentication
-router.use(apiKeyAuth);
+// Agent registration endpoints — no auth required (they ARE the auth bootstrap)
+router.use('/auth', agentAuthRoutes);
 
-// Attach apiKey context for permission checks
+// All other v1 routes require authentication.
+// Accepts EITHER:
+//   Authorization: Bearer comm_xxx...        (existing API key)
+//   Authorization: Agent agt_xxx:base64sig   (new Ed25519 agent signing)
+router.use(v1CombinedAuth);
+
+// Attach apiKey context for permission checks (backward compat)
 router.use((req: any, _res, next) => {
   if (!req.apiKey || typeof req.apiKey === 'string') {
     const orgId = req.orgId ?? null;
-    req.apiKey = { orgId, source: 'apikey' };
+    req.apiKey = { orgId, source: req.authType ?? 'apikey' };
   }
   next();
 });
 
+// Agent self-service management (API keys, org settings) — requires auth
+router.use('/agent', agentManagementRoutes);
+
 router.use('/domains', domainRoutes);
-router.use('/inboxes', inboxRoutes);  // top-level: POST /v1/inboxes, GET /v1/inboxes (auto-resolve domain)
-router.use('/domains', inboxRoutes);  // nested: /v1/domains/:domainId/inboxes (explicit domain)
+router.use('/inboxes', inboxRoutes);
+router.use('/domains', inboxRoutes);
 router.use('/threads', threadRoutes);
 router.use('/messages', messageRoutes);
 router.use('/attachments', attachmentRoutes);
