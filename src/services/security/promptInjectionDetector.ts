@@ -78,20 +78,75 @@ const EXFILTRATION_PATTERNS: RegExp[] = [
   /email\s+me\s+(your|the|all)\s+(data|conversations?|context|system)/i,
   /print\s+(your|the)\s+(system\s+prompt|instructions|configuration)/i,
   /show\s+me\s+(your|the)\s+(system\s+prompt|instructions|rules|internal)/i,
+  /show\s+(hidden|internal)\s+(prompt|instructions|rules)/i,
   /reveal\s+(your|the)\s+(system\s+prompt|instructions|configuration)/i,
+  /reveal\s+(internal|hidden)\s+(rules|prompt|instructions|configuration)/i,
   /dump\s+(your|the|all)\s+(data|context|memory|conversation|prompt)/i,
   /copy\s+(all|every)\s+(email|message|data|conversation)\s+to/i,
   /exfiltrate/i,
+  /\bapi[\s_-]?key\b/i,
+  /\bsecret(s)?\b/i,
+  /\bcredential(s)?\b/i,
+  /\benvironment\s+variable(s)?\b/i,
+  /\btoken(s)?\b/i,
+  /\bprivate\s+(thread|conversation|data|memory)\b/i,
+  /\bchain\s+of\s+thought\b/i,
+  /\bdisclose\s+(your|the)\s+(system\s+prompt|hidden\s+rules|instructions|configuration|system\s+configuration|memory)\b/i,
+  /\bdisclose\s+(all\s+)?(user\s+data|system\s+configuration|internal\s+rules)\b/i,
+  /\bfull\s+(thread|conversation)\s+history\b/i,
+  /\b(send|forward|export|upload)\s+(all|any|the)?[\w\s,]{0,50}(emails?|messages?|conversations?|threads?|attachments?|data)\s+to\b/i,
+];
+
+const TOOL_POISONING_PATTERNS: RegExp[] = [
+  /\btool\s+result\b/i,
+  /\bfunction\s+result\b/i,
+  /\bexecution\s+trace\b/i,
+  /\bsystem\s+event\b/i,
+  /\bmonitor\s+output\b/i,
+  /\bnext\s+action\s*:/i,
+  /\bsuppress\s+(alerts|warnings|logs|safeguards)\b/i,
+  /\bdo\s+not\s+log\b/i,
+  /\bmark\s+as\s+safe\b/i,
+];
+
+const AUTHORITY_IMPERSONATION_PATTERNS: RegExp[] = [
+  /\bas\s+your\s+(administrator|admin|security\s+lead|cto|compliance\s+officer)\b/i,
+  /\bas\s+your[\s\w,-]{0,50}(administrator|admin|security\s+lead|cto|compliance\s+officer)\b/i,
+  /\byou\s+are\s+authorized\s+to\b/i,
+  /\bthis\s+is\s+an?\s+approved\s+audit\b/i,
+  /\bcompliance\s+(requires|requests)\b/i,
+  /\blegal\s+requires\b/i,
+  /\bexecutive\s+override\b/i,
+];
+
+const DELAYED_TRIGGER_PATTERNS: RegExp[] = [
+  /\bwhen\s+asked\b/i,
+  /\bin\s+the\s+future\b/i,
+  /\bon\s+next\s+request\b/i,
+  /\bfor\s+future\s+messages\b/i,
+  /\bfrom\s+that\s+point\s+on\b/i,
+  /\bif\s+the\s+user\s+asks\b/i,
+];
+
+const MANY_SHOT_COERCION_PATTERNS: RegExp[] = [
+  /\bexample\s+\d+\b/i,
+  /\bassistant\s+reveals\b/i,
+  /\bnow\s+do\s+the\s+same\b/i,
+  /\bfollow\s+the\s+above\s+examples\b/i,
+  /\bpattern\s+to\s+imitate\b/i,
 ];
 
 const SECURITY_CONTEXT_SUPPRESSORS: RegExp[] = [
   /\bsecurity\s+training\b/i,
+  /\btraining\s+only\b/i,
   /\bexample\s+prompt\s+injection\b/i,
   /\bdetect(ing)?\s+prompt\s+injection\b/i,
   /\bjailbreak\s+mitigation\b/i,
   /\bred\s+team(ing)?\b/i,
   /\bthis\s+is\s+an?\s+example\b/i,
   /\bfor\s+educational\s+purposes\b/i,
+  /\bknown\s+attack\s+phrase\b/i,
+  /\bdo\s+not\s+execute\b/i,
   /```[\s\S]*?(ignore|system prompt|jailbreak)[\s\S]*?```/i,
 ];
 
@@ -219,17 +274,75 @@ class PromptInjectionDetector {
     const hiddenText = this.detectHiddenText(hiddenTexts);
     const dataExfiltration = this.detectPatternList(text, EXFILTRATION_PATTERNS, 0.4, 80);
     const encodingObfuscation = this.detectEncodingObfuscation(rawText);
+    const toolPoisoning = this.detectPatternList(text, TOOL_POISONING_PATTERNS, 0.35, 90);
+    const authorityImpersonation = this.detectPatternList(text, AUTHORITY_IMPERSONATION_PATTERNS, 0.3, 90);
+    const delayedTrigger = this.detectPatternList(text, DELAYED_TRIGGER_PATTERNS, 0.2, 90);
+    const manyShotCoercion = this.detectPatternList(text, MANY_SHOT_COERCION_PATTERNS, 0.2, 90);
     const suppressor = this.detectSuppressor(text);
 
-    const rawScore = (
-      roleOverride.score * 0.35 +
-      delimiterInjection.score * 0.25 +
+    const baseScore = (
+      roleOverride.score * 0.24 +
+      delimiterInjection.score * 0.12 +
       hiddenText.score * 0.2 +
-      dataExfiltration.score * 0.15 +
-      encodingObfuscation.score * 0.05
+      dataExfiltration.score * 0.18 +
+      encodingObfuscation.score * 0.08 +
+      toolPoisoning.score * 0.09 +
+      authorityImpersonation.score * 0.05 +
+      delayedTrigger.score * 0.02 +
+      manyShotCoercion.score * 0.02
     );
 
-    const suppressionFactor = 1 - (suppressor.score * 0.5);
+    const hasSensitiveExfiltration = dataExfiltration.matches.some((match) =>
+      /\bsystem\s+prompt\b|\bhidden\s+rules\b|\bconversation\s+history\b|\bapi[\s_-]?key\b|\bsecret\b|\btoken\b/i.test(match)
+    );
+    const strongRoleHijack = roleOverride.matches.some((match) =>
+      /\b(ignore|forget|disregard|override|reprogrammed|unrestricted|developer|admin)\b/i.test(match)
+    );
+    const delimiterWithCommand =
+      delimiterInjection.score >= 0.8 &&
+      /\b(ignore|override|reveal|dump|show|disclose|exfiltrate|execute|run)\b/i.test(text);
+    const manyShotExfiltrationCombo = manyShotCoercion.score >= 0.2 && dataExfiltration.score >= 0.4;
+
+    let conjunctionBoost = 0;
+    if (roleOverride.score >= 0.3 && dataExfiltration.score >= 0.4) {
+      conjunctionBoost += 0.28;
+    }
+    if (toolPoisoning.score >= 0.35 && dataExfiltration.score >= 0.4) {
+      conjunctionBoost += 0.24;
+    }
+    if (authorityImpersonation.score >= 0.3 && dataExfiltration.score >= 0.4) {
+      conjunctionBoost += 0.18;
+    }
+    if (delayedTrigger.score >= 0.2 && roleOverride.score >= 0.3) {
+      conjunctionBoost += 0.12;
+    }
+    if (manyShotExfiltrationCombo) {
+      conjunctionBoost += 0.24;
+    }
+    if (hasSensitiveExfiltration) {
+      conjunctionBoost += 0.22;
+    }
+    if (strongRoleHijack) {
+      conjunctionBoost += 0.16;
+    }
+    if (delimiterWithCommand) {
+      conjunctionBoost += 0.22;
+    }
+    if (roleOverride.score >= 0.3 && encodingObfuscation.score >= 0.25) {
+      conjunctionBoost += 0.12;
+    }
+
+    const rawScore = clamp(baseScore + conjunctionBoost);
+
+    const hardMaliciousSignals =
+      hiddenText.technique === 'hidden_instruction' ||
+      (roleOverride.score >= 0.3 && dataExfiltration.score >= 0.4) ||
+      (toolPoisoning.score >= 0.35 && dataExfiltration.score >= 0.4);
+
+    const suppressionFactor = hardMaliciousSignals
+      ? 1 - (suppressor.score * 0.15)
+      : 1 - (suppressor.score * 0.45);
+
     const score = clamp(rawScore * suppressionFactor);
 
     const reasonCodes: string[] = [];
@@ -237,7 +350,24 @@ class PromptInjectionDetector {
     if (delimiterInjection.score > 0) reasonCodes.push('delimiter_injection_detected');
     if (hiddenText.score > 0) reasonCodes.push(`hidden_text_${hiddenText.technique || 'detected'}`);
     if (dataExfiltration.score > 0) reasonCodes.push('data_exfiltration_detected');
+    if (hasSensitiveExfiltration) reasonCodes.push('sensitive_exfiltration_detected');
     if (encodingObfuscation.score > 0) reasonCodes.push('encoding_obfuscation_detected');
+    if (toolPoisoning.score > 0) reasonCodes.push('tool_poisoning_detected');
+    if (authorityImpersonation.score > 0) reasonCodes.push('authority_impersonation_detected');
+    if (delayedTrigger.score > 0) reasonCodes.push('delayed_trigger_detected');
+    if (manyShotCoercion.score > 0) reasonCodes.push('many_shot_coercion_detected');
+    if (manyShotExfiltrationCombo) reasonCodes.push('many_shot_exfiltration_combo');
+    if (roleOverride.score >= 0.3 && dataExfiltration.score >= 0.4) {
+      reasonCodes.push('direct_hijack_exfiltration_combo');
+    }
+    if (strongRoleHijack) reasonCodes.push('strong_role_hijack_detected');
+    if (delimiterWithCommand) reasonCodes.push('delimiter_command_combo');
+    if (toolPoisoning.score >= 0.35 && dataExfiltration.score >= 0.4) {
+      reasonCodes.push('tool_poisoning_exfiltration_combo');
+    }
+    if (authorityImpersonation.score >= 0.3 && dataExfiltration.score >= 0.4) {
+      reasonCodes.push('authority_laundering_exfiltration_combo');
+    }
     if (suppressor.score > 0) reasonCodes.push('contextual_suppressor_detected');
 
     const signals: PromptInjectionSignals = {
@@ -301,6 +431,13 @@ class PromptInjectionDetector {
       if (match) hiddenInstructionMatches.push(match[0].trim().slice(0, 80));
     }
 
+    if (
+      /\b(ignore|override|disregard|reveal|dump|show|disclose|exfiltrate)\b/i.test(combinedHidden) &&
+      /\b(system\s+prompt|instructions|rules|conversation|thread|data|memory)\b/i.test(combinedHidden)
+    ) {
+      hiddenInstructionMatches.push('hidden_imperative_instruction');
+    }
+
     if (hiddenInstructionMatches.length > 0) {
       return {
         score: 1.0,
@@ -322,6 +459,10 @@ class PromptInjectionDetector {
   private detectEncodingObfuscation(text: string): InjectionSignal {
     const matches: string[] = [];
 
+    if (/[\u200B\u200C\u200D\uFEFF\u2060]/.test(text)) {
+      matches.push('zero_width_obfuscation');
+    }
+
     const rot13Decoded = rot13(text);
     for (const pattern of ROLE_OVERRIDE_PATTERNS.slice(0, 5)) {
       if (pattern.test(rot13Decoded) && !pattern.test(text)) {
@@ -333,12 +474,21 @@ class PromptInjectionDetector {
     if (/base64/i.test(text) && /decode|interpret|execute|run/i.test(text)) {
       const b64Blocks = text.match(/[A-Za-z0-9+/=]{40,}/g);
       if (b64Blocks && b64Blocks.length > 0) {
+        matches.push('base64_decode_lure');
         try {
-          const decoded = Buffer.from(b64Blocks[0], 'base64').toString('utf8').toLowerCase();
-          for (const pattern of ROLE_OVERRIDE_PATTERNS.slice(0, 5)) {
-            if (pattern.test(decoded)) {
-              matches.push('base64_encoded_instruction');
-              break;
+          for (const block of b64Blocks.slice(0, 3)) {
+            const decoded = Buffer.from(block, 'base64').toString('utf8').toLowerCase();
+            for (const pattern of ROLE_OVERRIDE_PATTERNS.slice(0, 8)) {
+              if (pattern.test(decoded)) {
+                matches.push('base64_encoded_instruction');
+                break;
+              }
+            }
+            for (const pattern of EXFILTRATION_PATTERNS.slice(0, 10)) {
+              if (pattern.test(decoded)) {
+                matches.push('base64_encoded_exfiltration');
+                break;
+              }
             }
           }
         } catch {
@@ -352,9 +502,12 @@ class PromptInjectionDetector {
     if (cyrillicCount > 5 && latinCount > 5 && cyrillicCount / (cyrillicCount + latinCount) > 0.1) {
       matches.push('mixed_script_obfuscation');
     }
+    if (/[a-z][\u0400-\u04FF][a-z]|[\u0400-\u04FF][a-z]{2,}|[a-z]{2,}[\u0400-\u04FF]/i.test(text)) {
+      matches.push('single_char_script_confusable');
+    }
 
     return {
-      score: Math.min(matches.length * 0.25, 0.5),
+      score: Math.min(matches.length * 0.25, 0.75),
       matches,
     };
   }
@@ -399,6 +552,18 @@ class PromptInjectionDetector {
     }
     if (signals.encoding_obfuscation.score > 0) {
       parts.push(`encoding obfuscation (${signals.encoding_obfuscation.matches.join(', ')})`);
+    }
+    if (reasonCodes.includes('tool_poisoning_detected')) {
+      parts.push('tool output poisoning semantics');
+    }
+    if (reasonCodes.includes('authority_impersonation_detected')) {
+      parts.push('authority/permission laundering language');
+    }
+    if (reasonCodes.includes('delayed_trigger_detected')) {
+      parts.push('delayed trigger persistence instruction');
+    }
+    if (reasonCodes.includes('many_shot_coercion_detected')) {
+      parts.push('few-shot coercion pattern');
     }
     if (reasonCodes.includes('contextual_suppressor_detected')) {
       parts.push('context suggests educational or defensive discussion');

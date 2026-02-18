@@ -15,6 +15,16 @@ const stripId = (doc: DomainDocument): DomainEntry => {
   return rest;
 };
 
+const resolveInboxAddress = (inbox: InboxEntry, domainName?: string) => {
+  if (domainName && inbox.localPart) {
+    return {
+      ...inbox,
+      address: `${inbox.localPart}@${domainName}`,
+    };
+  }
+  return inbox;
+};
+
 /**
  * Decrypt all webhook secrets in a domain entry after reading from DB.
  */
@@ -118,7 +128,7 @@ const listInboxes = async (domainId: string, orgId?: string) => {
     return [];
   }
   
-  const allInboxes = domain?.inboxes || [];
+  const allInboxes = (domain?.inboxes || []).map((inbox) => resolveInboxAddress(inbox, domain?.name));
   
   // Filter by inbox-level orgId for proper isolation (critical for shared default domain)
   if (orgId) {
@@ -134,14 +144,14 @@ const getInbox = async (domainId: string, inboxId: string, orgId?: string) => {
     return null;
   }
   
-  const inbox = domain?.inboxes?.find((inbox) => inbox.id === inboxId) || null;
+  const inbox = (domain?.inboxes?.find((entry) => entry.id === inboxId) || null);
   
   // Check inbox-level orgId for proper isolation (critical for shared default domain)
   if (inbox && orgId && inbox.orgId && inbox.orgId !== orgId) {
     return null;
   }
   
-  return inbox;
+  return inbox ? resolveInboxAddress(inbox, domain?.name) : null;
 };
 
 const getInboxByLocalPart = async (domainId: string, localPart: string, orgId?: string) => {
@@ -157,7 +167,7 @@ const getInboxByLocalPart = async (domainId: string, localPart: string, orgId?: 
     return null;
   }
   
-  return inbox;
+  return inbox ? resolveInboxAddress(inbox, domain?.name) : null;
 };
 
 const getInboxById = async (inboxId: string, orgId?: string) => {

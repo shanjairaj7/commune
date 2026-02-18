@@ -7,6 +7,7 @@ const ensureIndexes = async () => {
   if (suppressions) {
     await suppressions.createIndex({ email: 1 }, { unique: true });
     await suppressions.createIndex({ inbox_id: 1, source: 1 });
+    await suppressions.createIndex({ domain_id: 1, source: 1 });
     await suppressions.createIndex({ created_at: 1 });
     await suppressions.createIndex({ expires_at: 1 }, { expireAfterSeconds: 0 });
   }
@@ -118,9 +119,43 @@ const getDomainSuppressions = async (domainId: string) => {
   }
   
   return collection.find({
-    inbox_id: domainId,
+    $or: [
+      { domain_id: domainId },
+      { inbox_id: domainId, source: 'domain' },
+    ],
     source: 'domain'
   }).sort({ created_at: -1 }).toArray();
+};
+
+const getSuppressions = async ({
+  inboxId,
+  domainId,
+  inboxIds,
+  limit = 50,
+}: {
+  inboxId?: string;
+  domainId?: string;
+  inboxIds?: string[];
+  limit?: number;
+}) => {
+  const collection = await getCollection<SuppressionEntry>('suppressions');
+  if (!collection) {
+    return [];
+  }
+
+  const filter: any = {};
+  if (inboxId) {
+    filter.inbox_id = inboxId;
+  } else if (inboxIds && inboxIds.length > 0) {
+    filter.inbox_id = { $in: inboxIds };
+  } else if (domainId) {
+    filter.$or = [
+      { domain_id: domainId },
+      { inbox_id: domainId, source: 'domain' },
+    ];
+  }
+
+  return collection.find(filter).sort({ created_at: -1 }).limit(limit).toArray();
 };
 
 export default {
@@ -128,5 +163,6 @@ export default {
   addSuppression,
   isSuppressed,
   getInboxSuppressions,
-  getDomainSuppressions
+  getDomainSuppressions,
+  getSuppressions,
 };

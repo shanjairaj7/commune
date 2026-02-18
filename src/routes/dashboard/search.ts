@@ -2,6 +2,7 @@ import express from 'express';
 import { z } from 'zod';
 import { SearchService } from '../../services/searchService';
 import { SearchFilterSchema } from '../../types/search';
+import { requireFeature } from '../../middleware/planGate';
 import logger from '../../utils/logger';
 
 const router = express.Router();
@@ -17,8 +18,8 @@ const SearchRequestSchema = z.object({
   }).optional(),
 });
 
-// POST /api/search
-router.post('/', async (req, res) => {
+// POST /api/search — requires semanticSearch feature
+router.post('/', requireFeature('semanticSearch'), async (req, res) => {
   try {
     const { query, filter, options } = SearchRequestSchema.parse(req.body);
     const results = await searchService.search(

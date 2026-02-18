@@ -65,6 +65,49 @@ export const fusePromptRisk = (input: FusionInput): FusionResult => {
     reasonCodes.push('override_exfiltration_obfuscation_floor');
   }
 
+  if (reasonCodes.includes('direct_hijack_exfiltration_combo')) {
+    fusionScore = Math.max(fusionScore, minRiskScore('high'));
+    reasonCodes.push('override_direct_hijack_exfiltration_floor');
+  }
+
+  if (reasonCodes.includes('tool_poisoning_exfiltration_combo')) {
+    fusionScore = Math.max(fusionScore, minRiskScore('high'));
+    reasonCodes.push('override_tool_poisoning_exfiltration_floor');
+  }
+
+  if (reasonCodes.includes('authority_laundering_exfiltration_combo')) {
+    fusionScore = Math.max(fusionScore, minRiskScore('high'));
+    reasonCodes.push('override_authority_laundering_floor');
+  }
+
+  if (reasonCodes.includes('sensitive_exfiltration_detected')) {
+    fusionScore = Math.max(fusionScore, minRiskScore('medium'));
+    reasonCodes.push('override_sensitive_exfiltration_floor');
+  }
+
+  if (
+    reasonCodes.includes('strong_role_hijack_detected') &&
+    !reasonCodes.includes('contextual_suppressor_detected')
+  ) {
+    fusionScore = Math.max(fusionScore, minRiskScore('medium'));
+    reasonCodes.push('override_role_hijack_floor');
+  }
+
+  if (reasonCodes.includes('delimiter_command_combo')) {
+    fusionScore = Math.max(fusionScore, minRiskScore('high'));
+    reasonCodes.push('override_delimiter_command_floor');
+  }
+
+  if (reasonCodes.includes('many_shot_exfiltration_combo')) {
+    fusionScore = Math.max(fusionScore, minRiskScore('medium'));
+    reasonCodes.push('override_many_shot_floor');
+  }
+
+  if (reasonCodes.includes('delayed_trigger_detected') && reasonCodes.includes('role_override_detected')) {
+    fusionScore = Math.max(fusionScore, minRiskScore('medium'));
+    reasonCodes.push('override_delayed_role_floor');
+  }
+
   let disagreement: FusionResult['disagreement'];
   if (modelChecked && typeof modelScore === 'number') {
     if (modelScore >= 0.6 && heuristicScore < 0.4) disagreement = 'model_high_rule_low';

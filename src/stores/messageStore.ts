@@ -68,6 +68,12 @@ const insertMessage = async (message: UnifiedMessage) => {
     { upsert: true }
   );
 
+  // Invalidate overview cache for this inbox (fire-and-forget, non-blocking)
+  if (doc.metadata?.inbox_id && doc.metadata?.domain_id) {
+    const { default: overviewCacheService } = await import('../services/overviewCacheService');
+    overviewCacheService.invalidateInboxCache(doc.metadata.domain_id, doc.metadata.inbox_id).catch(() => {});
+  }
+
   return doc;
 };
 
@@ -518,9 +524,15 @@ const getAttachment = async (attachmentId: string) => {
   return att;
 };
 
+// Delivery status priority system (higher = more severe / more final):
+//   sent (1)  <  delivered (2)  <  bounced/complained/failed/suppressed (3)
+// A status can only be overwritten by one of equal or higher priority.
+const ALL_TERMINAL_STATUSES = ['delivered', 'bounced', 'failed', 'complained', 'suppressed'];
+const NEGATIVE_TERMINAL_STATUSES = ['bounced', 'failed', 'complained', 'suppressed'];
+
 const updateDeliveryStatus = async (
   messageId: string,
-  status: 'sent' | 'delivered' | 'bounced' | 'failed' | 'complained',
+  status: 'sent' | 'delivered' | 'bounced' | 'failed' | 'complained' | 'suppressed',
   data?: any,
   inboxId?: string
 ) => {
@@ -543,9 +555,23 @@ const updateDeliveryStatus = async (
       }
     }
   }
+
+  // Atomic guard: use MongoDB filter to prevent TOCTOU race conditions when
+  // Resend fires multiple webhooks nearly simultaneously.
+  //
+  // Priority rules:
+  //   'sent'      → cannot overwrite any terminal status
+  //   'delivered'  → cannot overwrite negative outcomes (bounced/complained/failed/suppressed)
+  //   negative     → can overwrite anything (highest priority)
+  const filter: any = { message_id: messageId };
+  if (status === 'sent') {
+    filter['metadata.delivery_status'] = { $nin: ALL_TERMINAL_STATUSES };
+  } else if (status === 'delivered') {
+    filter['metadata.delivery_status'] = { $nin: NEGATIVE_TERMINAL_STATUSES };
+  }
   
   await messages.updateOne(
-    { message_id: messageId },
+    filter,
     { $set: updateDoc }
   );
 };
@@ -647,12 +673,15 @@ const getInboxDeliveryMetrics = async (
     (eventResult || []).map((item: any) => [item._id, item.count])
   );
 
+  // Use message-level metrics as source of truth (atomic guards ensure correct final status).
+  // Don't use Math.max with event counts — Resend sends multiple events per email
+  // (e.g. both 'delivered' + 'complained'), which inflates counts.
   const sent = messageMetrics.sent || 0;
-  const delivered = Math.max(messageMetrics.delivered || 0, eventMetrics.get('delivered') || 0);
-  const bounced = Math.max(messageMetrics.bounced || 0, eventMetrics.get('bounced') || 0);
-  const complained = Math.max(messageMetrics.complained || 0, eventMetrics.get('complained') || 0);
-  const failed = Math.max(messageMetrics.failed || 0, eventMetrics.get('failed') || 0);
-  const suppressed = Math.max(messageMetrics.suppressed || 0, eventMetrics.get('suppressed') || 0);
+  const delivered = messageMetrics.delivered || 0;
+  const bounced = messageMetrics.bounced || 0;
+  const complained = messageMetrics.complained || 0;
+  const failed = messageMetrics.failed || 0;
+  const suppressed = messageMetrics.suppressed || 0;
   const total = sent || 1;
 
   return {

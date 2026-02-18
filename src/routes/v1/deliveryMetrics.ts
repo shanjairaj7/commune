@@ -3,6 +3,7 @@ import { requirePermission } from '../../middleware/permissions';
 import messageStore from '../../stores/messageStore';
 import deliveryEventStore from '../../stores/deliveryEventStore';
 import suppressionStore from '../../stores/suppressionStore';
+import domainStore from '../../stores/domainStore';
 import logger from '../../utils/logger';
 
 const router = Router();
@@ -14,8 +15,8 @@ const router = Router();
  */
 router.get('/metrics', json(), requirePermission('messages:read'), async (req: any, res) => {
   const orgId = req.orgId;
-  const inboxId = req.query.inbox_id as string;
-  const domainId = req.query.domain_id as string;
+  const inboxId = (req.query.inbox_id || req.query.inboxId) as string | undefined;
+  const domainId = (req.query.domain_id || req.query.domainId) as string | undefined;
 
   // Accept both "days=7" and "period=7d/24h/30d" formats
   let days = 7;
@@ -79,19 +80,27 @@ router.get('/metrics', json(), requirePermission('messages:read'), async (req: a
  * Query: inbox_id (required), event_type (optional), limit (optional, default 50)
  */
 router.get('/events', json(), requirePermission('messages:read'), async (req: any, res) => {
-  const inboxId = req.query.inbox_id as string;
-  const eventType = req.query.event_type as string | undefined;
+  const inboxId = (req.query.inbox_id || req.query.inboxId) as string | undefined;
+  const domainId = (req.query.domain_id || req.query.domainId) as string | undefined;
+  const messageId = (req.query.message_id || req.query.messageId) as string | undefined;
+  const eventType = (req.query.event_type || req.query.eventType) as string | undefined;
   const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
 
-  if (!inboxId) {
-    return res.status(400).json({ error: 'inbox_id query parameter is required' });
+  if (!inboxId && !domainId && !messageId) {
+    return res.status(400).json({ error: 'Provide at least one of: inbox_id, domain_id, message_id' });
   }
 
   try {
-    const events = await deliveryEventStore.getInboxEvents(inboxId, eventType, limit);
+    const events = await deliveryEventStore.getEvents({
+      inboxId,
+      domainId,
+      messageId,
+      eventType,
+      limit,
+    });
     return res.json({ data: events });
   } catch (err) {
-    logger.error('v1: Failed to get delivery events', { inboxId, error: err });
+    logger.error('v1: Failed to get delivery events', { inboxId, domainId, messageId, error: err });
     return res.status(500).json({ error: 'Failed to get delivery events' });
   }
 });
@@ -102,17 +111,30 @@ router.get('/events', json(), requirePermission('messages:read'), async (req: an
  * Query: inbox_id (required)
  */
 router.get('/suppressions', json(), requirePermission('messages:read'), async (req: any, res) => {
-  const inboxId = req.query.inbox_id as string;
+  const orgId = req.orgId;
+  const inboxId = (req.query.inbox_id || req.query.inboxId) as string | undefined;
+  const domainId = (req.query.domain_id || req.query.domainId) as string | undefined;
+  const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
 
-  if (!inboxId) {
-    return res.status(400).json({ error: 'inbox_id query parameter is required' });
+  if (!inboxId && !domainId) {
+    return res.status(400).json({ error: 'inbox_id or domain_id query parameter is required' });
   }
 
   try {
-    const suppressions = await suppressionStore.getInboxSuppressions(inboxId);
+    let suppressions;
+    if (inboxId) {
+      suppressions = await suppressionStore.getSuppressions({ inboxId, limit });
+    } else {
+      const inboxes = await domainStore.listInboxes(domainId!, orgId);
+      suppressions = await suppressionStore.getSuppressions({
+        domainId,
+        inboxIds: inboxes.map((i: any) => i.id),
+        limit,
+      });
+    }
     return res.json({ data: suppressions });
   } catch (err) {
-    logger.error('v1: Failed to get suppressions', { inboxId, error: err });
+    logger.error('v1: Failed to get suppressions', { orgId, inboxId, domainId, error: err });
     return res.status(500).json({ error: 'Failed to get suppressions' });
   }
 });

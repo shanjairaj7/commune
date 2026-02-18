@@ -19,7 +19,22 @@ router.post('/upload', async (req, res) => {
     // Decode base64 content
     const buffer = Buffer.from(content, 'base64');
     const attachmentStorageService = AttachmentStorageService.getInstance();
-    
+
+    // Check storage quota before uploading
+    if (orgId) {
+      const quota = await attachmentStorageService.checkStorageQuota(orgId, buffer.length);
+      if (!quota.allowed) {
+        const limitMB = Math.round(quota.limit / (1024 * 1024));
+        const usedMB = Math.round(quota.used / (1024 * 1024));
+        return res.status(413).json({
+          error: 'Attachment storage limit exceeded',
+          used_mb: usedMB,
+          limit_mb: limitMB,
+          upgrade_url: '/dashboard/billing',
+        });
+      }
+    }
+
     // Upload to Cloudinary or store as base64
     const uploadResult = await attachmentStorageService.uploadAttachment(
       buffer,
@@ -46,6 +61,11 @@ router.post('/upload', async (req, res) => {
     };
 
     await messageStore.insertAttachments([attachmentRecord]);
+
+    // Track storage usage
+    if (orgId) {
+      await attachmentStorageService.trackStorageUsage(orgId, buffer.length);
+    }
 
     logger.info('Uploaded attachment', { 
       orgId, 

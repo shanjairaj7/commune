@@ -31,6 +31,10 @@ export interface InboxEntry {
     schema: Record<string, any>;
     enabled: boolean;
   };
+  limits?: {
+    emailsPerDay?: number;
+    emailsPerHour?: number;
+  };
   createdAt?: string;
   status?: string;
 }

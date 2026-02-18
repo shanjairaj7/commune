@@ -144,6 +144,27 @@ export class ApiKeyService {
     return result;
   }
 
+  static async updateApiKeyLimits(
+    keyId: string,
+    orgId: string,
+    limits?: { maxInboxes?: number; maxEmailsPerDay?: number }
+  ): Promise<ApiKey | null> {
+    const collection = await getCollection<ApiKey>('api_keys');
+    if (!collection) return null;
+
+    const update: any = limits
+      ? { $set: { limits, updatedAt: new Date().toISOString() } }
+      : { $unset: { limits: 1 }, $set: { updatedAt: new Date().toISOString() } };
+
+    const result = await collection.findOneAndUpdate(
+      { id: keyId, orgId },
+      update,
+      { returnDocument: 'after' }
+    );
+
+    return result;
+  }
+
   static async countApiKeysByOrg(orgId: string): Promise<number> {
     const collection = await getCollection<ApiKey>('api_keys');
     if (!collection) return 0;

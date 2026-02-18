@@ -1,18 +1,12 @@
 import rateLimit from 'express-rate-limit';
 import { Request, Response } from 'express';
 import { getOrgTierLimits, TierType } from '../config/rateLimits';
-import { getCollection } from '../db';
-import type { Organization } from '../types';
+import { resolveOrgTier } from '../lib/tierResolver';
 import logger from '../utils/logger';
 
 // In-memory store for rate limiting
 // Maps: "orgId:endpoint:window" -> number of requests
 const rateLimitStore = new Map<string, Array<{ timestamp: number }>>();
-
-// Cache org tiers in memory to avoid DB lookups on every request.
-// TTL: 5 minutes — balance between freshness and performance.
-const tierCache = new Map<string, { tier: TierType; expiresAt: number }>();
-const TIER_CACHE_TTL_MS = 5 * 60 * 1000;
 
 interface OrgRequest extends Request {
   orgId?: string;
@@ -20,28 +14,9 @@ interface OrgRequest extends Request {
   apiKey?: { orgId?: string };
 }
 
-// Look up the org's tier from DB with in-memory caching
 const getOrgTier = async (req: OrgRequest): Promise<TierType> => {
   const orgId = req.orgId || req.user?.orgId || req.apiKey?.orgId;
-  if (!orgId) return 'free';
-
-  // Check cache
-  const cached = tierCache.get(orgId);
-  if (cached && cached.expiresAt > Date.now()) return cached.tier;
-
-  try {
-    const orgs = await getCollection<Organization>('organizations');
-    if (orgs) {
-      const org = await orgs.findOne({ id: orgId }, { projection: { tier: 1 } });
-      const tier: TierType = (org?.tier as TierType) || 'free';
-      tierCache.set(orgId, { tier, expiresAt: Date.now() + TIER_CACHE_TTL_MS });
-      return tier;
-    }
-  } catch (error) {
-    logger.warn('Failed to look up org tier, defaulting to free', { orgId, error });
-  }
-
-  return 'free';
+  return resolveOrgTier(orgId);
 };
 
 // Custom key generator - uses orgId instead of IP

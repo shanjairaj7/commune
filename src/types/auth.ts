@@ -1,8 +1,10 @@
+export type OrgTier = 'free' | 'agent_pro' | 'business' | 'enterprise';
+
 export interface Organization {
   id: string;
   name: string;
   slug: string;
-  tier: 'free' | 'pro' | 'enterprise';
+  tier: OrgTier;
   settings: {
     allowedDomains?: string[];
     emailVerificationRequired?: boolean;
@@ -12,6 +14,13 @@ export interface Organization {
   status: 'active' | 'inactive' | 'suspended';
   createdAt: string;
   updatedAt: string;
+  // Stripe billing
+  stripe_customer_id?: string;
+  stripe_subscription_id?: string;
+  billing_cycle?: 'monthly' | 'yearly';
+  plan_updated_at?: string;
+  // Usage tracking
+  attachment_storage_used_bytes?: number;
 }
 
 export interface User {
@@ -46,6 +55,10 @@ export interface ApiKey {
   createdBy: string;
   createdAt: string;
   updatedAt: string;
+  limits?: {
+    maxInboxes?: number;
+    maxEmailsPerDay?: number;
+  };
 }
 
 export interface EmailVerificationToken {

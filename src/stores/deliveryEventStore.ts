@@ -24,20 +24,44 @@ const storeEvent = async (event: Omit<DeliveryEvent, '_id'>) => {
   };
   
   await collection.insertOne(doc);
+
+  // Invalidate overview cache for this inbox (fire-and-forget, non-blocking)
+  if (doc.inbox_id && doc.domain_id) {
+    const { default: overviewCacheService } = await import('../services/overviewCacheService');
+    overviewCacheService.invalidateInboxCache(doc.domain_id, doc.inbox_id).catch(() => {});
+  }
+  
   return doc;
 };
 
-const getInboxEvents = async (
-  inboxId: string,
-  eventType?: string,
-  limit = 100
-) => {
+const getEvents = async ({
+  inboxId,
+  domainId,
+  messageId,
+  eventType,
+  limit = 100,
+}: {
+  inboxId?: string;
+  domainId?: string;
+  messageId?: string;
+  eventType?: string;
+  limit?: number;
+}) => {
   const collection = await getCollection<DeliveryEvent>('delivery_events');
   if (!collection) {
     return [];
   }
   
-  const filter: any = { inbox_id: inboxId };
+  const filter: any = {};
+  if (inboxId) {
+    filter.inbox_id = inboxId;
+  }
+  if (domainId) {
+    filter.domain_id = domainId;
+  }
+  if (messageId) {
+    filter.message_id = messageId;
+  }
   if (eventType) {
     filter.event_type = eventType;
   }
@@ -48,8 +72,13 @@ const getInboxEvents = async (
     .toArray();
 };
 
+const getInboxEvents = async (inboxId: string, eventType?: string, limit = 100) => {
+  return getEvents({ inboxId, eventType, limit });
+};
+
 export default {
   ensureIndexes,
   storeEvent,
-  getInboxEvents
+  getInboxEvents,
+  getEvents
 };

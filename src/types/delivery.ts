@@ -5,6 +5,7 @@ export interface SuppressionEntry {
   type: 'hard' | 'soft' | 'spam' | 'permanent';
   source: 'inbox' | 'domain' | 'global';
   inbox_id?: string;
+  domain_id?: string;
   created_at?: string;
   expires_at?: string;
   message_id?: string;

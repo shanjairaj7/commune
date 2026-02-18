@@ -76,15 +76,17 @@ const buildFromAddress = async ({
     if (inboxId) {
       const inbox = await domainStore.getInbox(effectiveDomainId, inboxId);
       const displayName = inbox?.displayName || inbox?.agent?.name || null;
-      if (inbox?.address) {
-        return { address: formatFromWithDisplayName(inbox.address, displayName), resolvedDomainId: effectiveDomainId };
-      }
       if (inbox?.localPart) {
         const entry = await domainStore.getDomain(effectiveDomainId);
         if (entry?.name) {
+          // Prefer current domain name over persisted inbox.address so
+          // shared-domain renames take effect immediately.
           const rawAddr = `${inbox.localPart}@${entry.name}`;
           return { address: formatFromWithDisplayName(rawAddr, displayName), resolvedDomainId: effectiveDomainId };
         }
+      }
+      if (inbox?.address) {
+        return { address: formatFromWithDisplayName(inbox.address, displayName), resolvedDomainId: effectiveDomainId };
       }
     }
 
@@ -354,15 +356,9 @@ const sendEmail = async (payload: SendMessagePayload & { orgId?: string }) => {
   // Index sent email for vector search (with attachment metadata)
   await EmailProcessor.getInstance().processMessage(sentMessage);
 
-  // Store delivery event
-  await deliveryEventStore.storeEvent({
-    message_id: (data as any).id,
-    event_type: 'sent' as const,
-    event_data: data,
-    inbox_id: payload.inboxId || undefined,
-    domain_id: payload.domainId || undefined,
-    org_id: payload.orgId || undefined
-  });
+  // Note: We don't store a 'sent' delivery event here because Resend's email.sent
+  // webhook will fire shortly and the webhook handler will record it. Storing it
+  // here would create a duplicate event that inflates the sent count.
 
   return {
     data: { ...(data as any), thread_id: threadId, smtp_message_id: resendMessageId },

@@ -70,25 +70,3 @@ export const validateOutboundContent = async (
   }
 };
 
-// Detect burst sending patterns
-export const burstDetection = async (
-  req: OrgRequest,
-  res: Response,
-  next: NextFunction
-) => {
-  try {
-    const orgId = req.orgId || req.user?.orgId || req.apiKey?.orgId;
-    if (!orgId) {
-      return next();
-    }
-
-    // This would need Redis or similar for production
-    // For now, just log and continue
-    logger.info('Burst detection check', { orgId });
-
-    next();
-  } catch (error) {
-    logger.error('Burst detection error:', error);
-    next();
-  }
-};

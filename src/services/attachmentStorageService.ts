@@ -1,6 +1,9 @@
 import { v2 as cloudinary } from 'cloudinary';
 import { randomUUID } from 'crypto';
 import logger from '../utils/logger';
+import { getCollection } from '../db';
+import { getOrgTierLimits, TierType } from '../config/rateLimits';
+import type { Organization } from '../types/auth';
 
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
 const CLOUDINARY_API_KEY = process.env.CLOUDINARY_API_KEY;
@@ -159,6 +162,73 @@ export class AttachmentStorageService {
 
   public isCloudinaryConfigured(): boolean {
     return isCloudinaryConfigured;
+  }
+
+  /**
+   * Check if an org has enough storage quota for the given bytes.
+   * Returns { allowed, used, limit } or throws on DB error.
+   */
+  public async checkStorageQuota(orgId: string, bytesNeeded: number): Promise<{
+    allowed: boolean;
+    used: number;
+    limit: number;
+  }> {
+    const orgs = await getCollection<Organization>('organizations');
+    if (!orgs) return { allowed: true, used: 0, limit: Infinity };
+
+    const org = await orgs.findOne({ id: orgId });
+    if (!org) return { allowed: true, used: 0, limit: Infinity };
+
+    const tier = (org.tier || 'free') as TierType;
+    const limits = getOrgTierLimits(tier);
+    const used = org.attachment_storage_used_bytes || 0;
+    const limit = limits.attachmentStorageBytes;
+
+    if (limit === Infinity) return { allowed: true, used, limit };
+
+    return {
+      allowed: used + bytesNeeded <= limit,
+      used,
+      limit,
+    };
+  }
+
+  /**
+   * Increment the org's attachment_storage_used_bytes after a successful upload.
+   */
+  public async trackStorageUsage(orgId: string, bytes: number): Promise<void> {
+    if (!orgId || bytes <= 0) return;
+
+    try {
+      const orgs = await getCollection<Organization>('organizations');
+      if (!orgs) return;
+
+      await orgs.updateOne(
+        { id: orgId },
+        { $inc: { attachment_storage_used_bytes: bytes } as any }
+      );
+    } catch (error) {
+      logger.error('Failed to track attachment storage usage', { orgId, bytes, error });
+    }
+  }
+
+  /**
+   * Decrement storage usage when an attachment is deleted.
+   */
+  public async releaseStorageUsage(orgId: string, bytes: number): Promise<void> {
+    if (!orgId || bytes <= 0) return;
+
+    try {
+      const orgs = await getCollection<Organization>('organizations');
+      if (!orgs) return;
+
+      await orgs.updateOne(
+        { id: orgId },
+        { $inc: { attachment_storage_used_bytes: -bytes } as any }
+      );
+    } catch (error) {
+      logger.error('Failed to release attachment storage usage', { orgId, bytes, error });
+    }
   }
 }
 

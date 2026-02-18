@@ -31,12 +31,32 @@ router.post('/upload', json({ limit: '10mb' }), requirePermission('attachments:w
     const buffer = Buffer.from(content, 'base64');
     const attachmentStorageService = AttachmentStorageService.getInstance();
 
+    // Check storage quota before uploading
+    if (orgId) {
+      const quota = await attachmentStorageService.checkStorageQuota(orgId, buffer.length);
+      if (!quota.allowed) {
+        const limitMB = Math.round(quota.limit / (1024 * 1024));
+        const usedMB = Math.round(quota.used / (1024 * 1024));
+        return res.status(413).json({
+          error: 'Attachment storage limit exceeded',
+          used_mb: usedMB,
+          limit_mb: limitMB,
+          upgrade_url: '/dashboard/billing',
+        });
+      }
+    }
+
     const uploadResult = await attachmentStorageService.uploadAttachment(
       buffer,
       filename,
       mt,
       orgId
     );
+
+    // Track storage usage
+    if (orgId) {
+      await attachmentStorageService.trackStorageUsage(orgId, buffer.length);
+    }
 
     const attachmentId = crypto.randomBytes(16).toString('hex');
 

@@ -1,8 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { getRedisClient, isRedisAvailable } from './redis';
 import { getOrgTierLimits, TierType } from '../config/rateLimits';
-import { getCollection } from '../db';
-import type { Organization } from '../types';
+import { resolveOrgTier } from './tierResolver';
 import logger from '../utils/logger';
 
 // ─── Lua Scripts ────────────────────────────────────────────────────────────
@@ -120,31 +119,9 @@ interface OrgRequest extends Request {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-// Cache org tiers in memory to avoid DB lookups on every request.
-// TTL: 5 minutes — balance between freshness and performance.
-const tierCache = new Map<string, { tier: TierType; expiresAt: number }>();
-const TIER_CACHE_TTL_MS = 5 * 60 * 1000;
-
 const getOrgTier = async (req: OrgRequest): Promise<TierType> => {
   const orgId = req.orgId || req.user?.orgId || req.apiKey?.orgId;
-  if (!orgId) return 'free';
-
-  const cached = tierCache.get(orgId);
-  if (cached && cached.expiresAt > Date.now()) return cached.tier;
-
-  try {
-    const orgs = await getCollection<Organization>('organizations');
-    if (orgs) {
-      const org = await orgs.findOne({ id: orgId }, { projection: { tier: 1 } });
-      const tier: TierType = (org?.tier as TierType) || 'free';
-      tierCache.set(orgId, { tier, expiresAt: Date.now() + TIER_CACHE_TTL_MS });
-      return tier;
-    }
-  } catch (error) {
-    logger.warn('Failed to look up org tier, defaulting to free', { orgId, error });
-  }
-
-  return 'free';
+  return resolveOrgTier(orgId);
 };
 
 const getOrgId = (req: OrgRequest): string => {
@@ -163,6 +140,7 @@ interface RateLimiterOptions {
   keyPrefix: string;
   errorMessage: string;
   keyGenerator?: (req: OrgRequest) => string;
+  headerSuffix?: string; // e.g., 'Hour', 'Day' — namespaces X-RateLimit-* headers
 }
 
 const createRateLimiter = (opts: RateLimiterOptions) => {
@@ -190,9 +168,10 @@ const createRateLimiter = (opts: RateLimiterOptions) => {
 
         const [count, allowed, retryAfterMs] = result;
 
-        res.setHeader('X-RateLimit-Limit', max);
-        res.setHeader('X-RateLimit-Remaining', Math.max(0, max - count));
-        res.setHeader('X-RateLimit-Reset', Math.ceil((now + opts.windowMs) / 1000));
+        const sfx = opts.headerSuffix ? `-${opts.headerSuffix}` : '';
+        res.setHeader(`X-RateLimit-Limit${sfx}`, max);
+        res.setHeader(`X-RateLimit-Remaining${sfx}`, Math.max(0, max - count));
+        res.setHeader(`X-RateLimit-Reset${sfx}`, Math.ceil((now + opts.windowMs) / 1000));
 
         if (!allowed) {
           res.setHeader('Retry-After', Math.ceil(retryAfterMs / 1000));
@@ -210,8 +189,9 @@ const createRateLimiter = (opts: RateLimiterOptions) => {
 
     // Fallback to in-memory
     const count = memoryIncrement(key, opts.windowMs);
-    res.setHeader('X-RateLimit-Limit', max);
-    res.setHeader('X-RateLimit-Remaining', Math.max(0, max - count));
+    const sfx = opts.headerSuffix ? `-${opts.headerSuffix}` : '';
+    res.setHeader(`X-RateLimit-Limit${sfx}`, max);
+    res.setHeader(`X-RateLimit-Remaining${sfx}`, Math.max(0, max - count));
 
     if (count > max) {
       return res.status(429).json({ error: opts.errorMessage });
@@ -333,6 +313,7 @@ export const emailRateLimiter = createRateLimiter({
   },
   keyPrefix: 'email:hour',
   errorMessage: 'Hourly email rate limit exceeded',
+  headerSuffix: 'Hour',
 });
 
 export const emailDailyRateLimiter = createRateLimiter({
@@ -343,6 +324,7 @@ export const emailDailyRateLimiter = createRateLimiter({
   },
   keyPrefix: 'email:day',
   errorMessage: 'Daily email rate limit exceeded',
+  headerSuffix: 'Day',
 });
 
 export const domainRateLimiter = createRateLimiter({
@@ -353,6 +335,7 @@ export const domainRateLimiter = createRateLimiter({
   },
   keyPrefix: 'domain:day',
   errorMessage: 'Domain creation rate limit exceeded',
+  headerSuffix: 'Day',
 });
 
 export const inboxRateLimiter = createRateLimiter({
@@ -363,6 +346,7 @@ export const inboxRateLimiter = createRateLimiter({
   },
   keyPrefix: 'inbox:day',
   errorMessage: 'Inbox creation rate limit exceeded',
+  headerSuffix: 'Day',
 });
 
 export const outboundBurstDetector = createBurstDetector(DEFAULT_BURST_CONFIG);

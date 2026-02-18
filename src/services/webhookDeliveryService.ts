@@ -195,7 +195,7 @@ const deliverWebhook = async (params: {
 
   // Check circuit breaker
   if (isCircuitOpen(endpoint)) {
-    console.log(`⚡ Circuit open for ${endpoint}, skipping inline attempt, queuing for retry`);
+    logger.info('Circuit breaker open, skipping inline attempt, queuing for retry', { endpoint });
     const retryAt = calculateRetryAt(1);
     await webhookDeliveryStore.recordAttempt(deliveryId, {
       attempt: 1,
@@ -231,10 +231,10 @@ const deliverWebhook = async (params: {
       delivery_latency_ms: result.latency_ms,
     });
 
-    console.log(`✅ Webhook delivered on first attempt`, {
+    logger.info('Webhook delivered on first attempt', {
       deliveryId,
       endpoint,
-      latency: `${result.latency_ms}ms`,
+      latency_ms: result.latency_ms,
       statusCode: result.status_code,
     });
 
@@ -346,11 +346,12 @@ const processRetryBatch = async (): Promise<number> => {
           delivery_latency_ms: totalLatency,
         });
 
-        console.log(`✅ Webhook delivered on retry attempt ${attemptNumber}`, {
+        logger.info('Webhook delivered on retry', {
           deliveryId: delivery.delivery_id,
           endpoint,
-          latency: `${result.latency_ms}ms`,
-          totalLatency: `${totalLatency}ms`,
+          attempt: attemptNumber,
+          latency_ms: result.latency_ms,
+          totalLatency_ms: totalLatency,
         });
       } else {
         recordFailure(endpoint);
@@ -363,9 +364,10 @@ const processRetryBatch = async (): Promise<number> => {
             dead_at: new Date().toISOString(),
           });
 
-          console.error(`💀 Webhook dead after ${attemptNumber} attempts`, {
+          logger.error('Webhook dead after max attempts', {
             deliveryId: delivery.delivery_id,
             endpoint,
+            attempts: attemptNumber,
             lastError: result.error,
           });
         } else {
@@ -376,9 +378,10 @@ const processRetryBatch = async (): Promise<number> => {
             next_retry_at: retryAt,
           });
 
-          console.warn(`⚠️ Webhook retry ${attemptNumber}/${delivery.max_attempts} failed`, {
+          logger.warn('Webhook retry attempt failed', {
             deliveryId: delivery.delivery_id,
             endpoint,
+            attempt: `${attemptNumber}/${delivery.max_attempts}`,
             error: result.error,
             nextRetryAt: retryAt,
           });
@@ -390,7 +393,7 @@ const processRetryBatch = async (): Promise<number> => {
 
     return processed;
   } catch (err) {
-    console.error('❌ Retry worker error:', err);
+    logger.error('Retry worker error', { error: err });
     return 0;
   } finally {
     isProcessingRetries = false;
@@ -403,11 +406,10 @@ const processRetryBatch = async (): Promise<number> => {
  */
 const startRetryWorker = (): void => {
   if (retryWorkerHandle) {
-    console.warn('Retry worker already running');
+    logger.warn('Retry worker already running');
     return;
   }
 
-  console.log(`🔄 Webhook retry worker started (interval: ${RETRY_WORKER_INTERVAL_MS}ms, batch: ${RETRY_BATCH_SIZE})`);
   logger.info('Webhook retry worker started', {
     interval: RETRY_WORKER_INTERVAL_MS,
     batchSize: RETRY_BATCH_SIZE,
@@ -419,10 +421,10 @@ const startRetryWorker = (): void => {
     try {
       const processed = await processRetryBatch();
       if (processed > 0) {
-        console.log(`🔄 Retry worker processed ${processed} deliveries`);
+        logger.debug('Retry worker processed deliveries', { count: processed });
       }
     } catch (err) {
-      console.error('❌ Retry worker tick error:', err);
+      logger.error('Retry worker tick error', { error: err });
     }
   }, RETRY_WORKER_INTERVAL_MS);
 
@@ -436,7 +438,7 @@ const stopRetryWorker = (): void => {
   if (retryWorkerHandle) {
     clearInterval(retryWorkerHandle);
     retryWorkerHandle = null;
-    console.log('🛑 Webhook retry worker stopped');
+    logger.info('Webhook retry worker stopped');
   }
 };
 
@@ -459,7 +461,7 @@ const retryDelivery = async (deliveryId: string): Promise<{ success: boolean; er
     return { success: false, error: 'Failed to requeue delivery' };
   }
 
-  console.log(`🔄 Manual retry queued for delivery ${deliveryId}`);
+  logger.info('Manual retry queued', { deliveryId });
   return { success: true };
 };
 

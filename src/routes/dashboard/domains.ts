@@ -8,7 +8,9 @@ import monitoringService from '../../services/monitoringService';
 import alertService from '../../services/alertService';
 import metricsCacheService from '../../services/metricsCacheService';
 import metricsScheduler from '../../services/metricsScheduler';
+import overviewCacheService from '../../services/overviewCacheService';
 import { domainLimiter } from '../../middleware/rateLimiter';
+import { getOrgTierLimits, TierType } from '../../config/rateLimits';
 import logger from '../../utils/logger';
 import { OrganizationService } from '../../services/organizationService';
 import { DEFAULT_DOMAIN_ID, DEFAULT_DOMAIN_NAME } from '../../config/freeTierConfig';
@@ -39,12 +41,33 @@ router.post('/domains', domainLimiter, json(), async (req, res) => {
       return res.status(404).json({ error: 'Organization not found' });
     }
 
-    // Block free tier from creating domains
-    if (org.tier === 'free') {
-      logger.warn('Free tier attempted domain creation', { orgId, orgName: org.name });
+    // Check tier-based custom domain limits
+    const tier = (org.tier || 'free') as TierType;
+    const tierLimits = getOrgTierLimits(tier);
+
+    if (tierLimits.maxCustomDomains === 0) {
+      logger.warn('Tier does not allow custom domains', { orgId, orgName: org.name, tier });
       return res.status(403).json({ 
-        error: 'Free tier cannot create custom domains. Use shared default domain instead.' 
+        error: 'Your plan does not allow custom domains. Use shared default domain instead.',
+        current_tier: tier,
+        upgrade_url: '/dashboard/billing',
       });
+    }
+
+    // Count existing custom domains for this org
+    if (tierLimits.maxCustomDomains !== Infinity) {
+      const existingDomains = await domainStore.listDomains(orgId);
+      const customDomainCount = existingDomains.filter(d => d.id !== DEFAULT_DOMAIN_ID).length;
+      if (customDomainCount >= tierLimits.maxCustomDomains) {
+        logger.warn('Custom domain limit reached', { orgId, tier, count: customDomainCount, limit: tierLimits.maxCustomDomains });
+        return res.status(403).json({
+          error: `Custom domain limit reached (${customDomainCount}/${tierLimits.maxCustomDomains}). Upgrade your plan for more.`,
+          current_count: customDomainCount,
+          limit: tierLimits.maxCustomDomains,
+          current_tier: tier,
+          upgrade_url: '/dashboard/billing',
+        });
+      }
     }
 
     const { name, region, capabilities } = req.body || {};
@@ -93,6 +116,14 @@ router.get('/domains', async (req, res) => {
 
   if (org.tier === 'free') {
     let storedDefault = await domainStore.getDomain(DEFAULT_DOMAIN_ID);
+    if (storedDefault && storedDefault.name !== DEFAULT_DOMAIN_NAME) {
+      storedDefault = await domainStore.upsertDomain({
+        ...storedDefault,
+        id: DEFAULT_DOMAIN_ID,
+        name: DEFAULT_DOMAIN_NAME,
+        status: storedDefault.status || 'verified',
+      });
+    }
     if (!storedDefault) {
       storedDefault = await domainStore.upsertDomain({
         id: DEFAULT_DOMAIN_ID,
@@ -257,6 +288,7 @@ router.post('/domains/:domainId/inboxes/:inboxId/suppressions', json(), async (r
     type: type || 'permanent',
     source: 'inbox',
     inbox_id: inboxId,
+    domain_id: domainId,
   });
   
   return res.json({ data: { ok: true } });
@@ -317,7 +349,7 @@ router.get('/domains/:domainId/inboxes/:inboxId/monitoring/metrics', async (req,
     const metrics = await metricsCacheService.getCachedMetrics(inboxId, timeWindow as string);
     return res.json({ data: metrics });
   } catch (error) {
-    console.error('Error getting metrics:', error);
+    logger.error('Error getting metrics', { error });
     return res.status(500).json({ error: 'Failed to get metrics' });
   }
 });
@@ -338,7 +370,7 @@ router.get('/domains/:domainId/inboxes/:inboxId/monitoring/alerts', async (req, 
     const alerts = await alertService.calculateAlerts(inboxId, timeWindow as string);
     return res.json({ data: alerts });
   } catch (error) {
-    console.error('Error calculating alerts:', error);
+    logger.error('Error calculating alerts', { error });
     return res.status(500).json({ error: 'Failed to calculate alerts' });
   }
 });
@@ -376,7 +408,7 @@ router.get('/domains/:domainId/inboxes/:inboxId/monitoring/dashboard', async (re
       }
     });
   } catch (error) {
-    console.error('Error getting dashboard data:', error);
+    logger.error('Error getting dashboard data', { error });
     return res.status(500).json({ error: 'Failed to get dashboard data' });
   }
 });
@@ -422,8 +454,188 @@ router.post('/domains/:domainId/inboxes/:inboxId/monitoring/cache/clear', async 
     metricsCacheService.clearInboxCache(inboxId);
     return res.json({ data: { message: 'Cache cleared successfully' } });
   } catch (error) {
-    console.error('Error clearing cache:', error);
+    logger.error('Error clearing cache', { error });
     return res.status(500).json({ error: 'Failed to clear cache' });
+  }
+});
+
+// ─── Aggregated Overview Endpoint ─────────────────────────────────
+// Replaces 3×N per-inbox calls with a single query.
+// GET /api/domains/:domainId/overview?timeWindow=24h&inboxId=all
+router.get('/domains/:domainId/overview', async (req, res) => {
+  const { domainId } = req.params;
+  const { timeWindow = '24h', inboxId: inboxFilter = 'all' } = req.query;
+  const orgId = (req as any).apiKey?.orgId || null;
+
+  if (!orgId) {
+    return res.status(403).json({ error: 'Organization not found for API key' });
+  }
+
+  try {
+    // Check Redis cache first (2min TTL)
+    const cached = await overviewCacheService.getCachedOverview(
+      domainId,
+      inboxFilter as string,
+      timeWindow as string
+    );
+    if (cached) {
+      return res.json({ data: cached });
+    }
+
+    // Cache miss — compute fresh data
+    // 1. Resolve inbox IDs in one domain lookup
+    const allInboxes = await domainStore.listInboxes(domainId, orgId);
+    const inboxList = allInboxes.map((i: any) => ({
+      id: i.id, localPart: i.localPart, address: i.address, domainName: i.domainName,
+    }));
+
+    if (!allInboxes.length) {
+      const emptyData = { metrics: null, alerts: [], events: [], inboxes: [], inbox_count: 0 };
+      await overviewCacheService.setCachedOverview(domainId, inboxFilter as string, timeWindow as string, emptyData);
+      return res.json({ data: emptyData });
+    }
+
+    const targets = inboxFilter === 'all'
+      ? allInboxes
+      : allInboxes.filter((i: any) => i.id === inboxFilter);
+
+    if (!targets.length) {
+      return res.status(404).json({ error: 'Inbox not found' });
+    }
+
+    const inboxIds = targets.map((i: any) => i.id);
+
+    // 2. Compute time window start
+    const startDate = new Date();
+    switch (timeWindow) {
+      case '1h':  startDate.setHours(startDate.getHours() - 1); break;
+      case '7d':  startDate.setDate(startDate.getDate() - 7); break;
+      case '30d': startDate.setDate(startDate.getDate() - 30); break;
+      default:    startDate.setDate(startDate.getDate() - 1); break; // 24h
+    }
+    const startISO = startDate.toISOString();
+
+    // 3. Single parallel fan-out: metrics agg + events query (3 DB ops total)
+    const { getCollection } = await import('../../db');
+    const [messages, deliveryEventsCol] = await Promise.all([
+      getCollection('messages'),
+      getCollection('delivery_events'),
+    ]);
+
+    if (!messages || !deliveryEventsCol) {
+      return res.status(500).json({ error: 'Database collections not available' });
+    }
+
+    const msgMatch: Record<string, unknown> = {
+      'metadata.inbox_id': inboxIds.length === 1 ? inboxIds[0] : { $in: inboxIds },
+      created_at: { $gte: startISO },
+    };
+    const evtMatch: Record<string, unknown> = {
+      inbox_id: inboxIds.length === 1 ? inboxIds[0] : { $in: inboxIds },
+      processed_at: { $gte: startISO },
+    };
+
+    const [msgAgg, evtAgg, recentEvents] = await Promise.all([
+      // Metrics from messages collection
+      messages.aggregate([
+        { $match: msgMatch },
+        {
+          $group: {
+            _id: null,
+            sent: { $sum: { $cond: [{ $eq: ['$direction', 'outbound'] }, 1, 0] } },
+            delivered: { $sum: { $cond: [{ $eq: ['$metadata.delivery_status', 'delivered'] }, 1, 0] } },
+            bounced: { $sum: { $cond: [{ $eq: ['$metadata.delivery_status', 'bounced'] }, 1, 0] } },
+            complained: { $sum: { $cond: [{ $eq: ['$metadata.delivery_status', 'complained'] }, 1, 0] } },
+            failed: { $sum: { $cond: [{ $eq: ['$metadata.delivery_status', 'failed'] }, 1, 0] } },
+            suppressed: { $sum: { $cond: [{ $eq: ['$metadata.delivery_status', 'suppressed'] }, 1, 0] } },
+          },
+        },
+      ]).toArray(),
+
+      // Event type counts from delivery_events
+      deliveryEventsCol.aggregate([
+        { $match: evtMatch },
+        { $group: { _id: '$event_type', count: { $sum: 1 } } },
+      ]).toArray(),
+
+      // Recent events for activity chart + recent events panel
+      deliveryEventsCol
+        .find(evtMatch)
+        .sort({ processed_at: -1 })
+        .limit(200)
+        .project({ _id: 0, message_id: 1, event_type: 1, processed_at: 1, inbox_id: 1, event_data: 1 })
+        .toArray(),
+    ]);
+
+    // 4. Build metrics from raw aggregation results
+    const raw = msgAgg[0] || { sent: 0, delivered: 0, bounced: 0, complained: 0, failed: 0, suppressed: 0 };
+    const evtMap: Record<string, number> = {};
+    (evtAgg as any[]).forEach((e: any) => { evtMap[e._id] = e.count; });
+
+    const m = {
+      sent: Math.max(raw.sent || 0, evtMap['sent'] || 0),
+      delivered: Math.max(raw.delivered || 0, evtMap['delivered'] || 0),
+      bounced: Math.max(raw.bounced || 0, evtMap['bounced'] || 0),
+      complained: Math.max(raw.complained || 0, evtMap['complained'] || 0),
+      failed: Math.max(raw.failed || 0, evtMap['failed'] || 0),
+      suppressed: Math.max(raw.suppressed || 0, evtMap['suppressed'] || 0),
+      orphan_events: evtMap['orphan'] || 0,
+    };
+    const total = m.sent || 1;
+    const metrics = {
+      ...m,
+      delivery_rate: (m.delivered / total) * 100,
+      bounce_rate: (m.bounced / total) * 100,
+      complaint_rate: (m.complained / total) * 100,
+      failure_rate: (m.failed / total) * 100,
+      suppression_rate: (m.suppressed / total) * 100,
+      orphan_event_rate: (m.orphan_events / total) * 100,
+      time_window: timeWindow,
+      calculated_at: new Date().toISOString(),
+    };
+
+    // 5. Derive alerts from metrics (pure computation — no extra DB)
+    const alerts: any[] = [];
+    const thresholds = {
+      bounce_rate: { warning: 2, critical: 5 },
+      complaint_rate: { warning: 0.05, critical: 0.1 },
+      failure_rate: { warning: 5, critical: 10 },
+      delivery_rate: { warning: 95, critical: 90 },
+    };
+    const now = new Date().toISOString();
+
+    const addAlert = (type: string, value: number, threshold: number, severity: 'warning' | 'critical') => {
+      alerts.push({ id: `overview-${type}-${now}`, type, severity, value, threshold, time_window: timeWindow, calculated_at: now });
+    };
+    if (metrics.bounce_rate > thresholds.bounce_rate.critical) addAlert('high_bounce_rate', metrics.bounce_rate, thresholds.bounce_rate.critical, 'critical');
+    else if (metrics.bounce_rate > thresholds.bounce_rate.warning) addAlert('high_bounce_rate', metrics.bounce_rate, thresholds.bounce_rate.warning, 'warning');
+    if (metrics.complaint_rate > thresholds.complaint_rate.critical) addAlert('high_complaint_rate', metrics.complaint_rate, thresholds.complaint_rate.critical, 'critical');
+    else if (metrics.complaint_rate > thresholds.complaint_rate.warning) addAlert('high_complaint_rate', metrics.complaint_rate, thresholds.complaint_rate.warning, 'warning');
+    if (metrics.failure_rate > thresholds.failure_rate.critical) addAlert('high_failure_rate', metrics.failure_rate, thresholds.failure_rate.critical, 'critical');
+    else if (metrics.failure_rate > thresholds.failure_rate.warning) addAlert('high_failure_rate', metrics.failure_rate, thresholds.failure_rate.warning, 'warning');
+    if (metrics.delivery_rate < thresholds.delivery_rate.critical) addAlert('low_delivery_rate', metrics.delivery_rate, thresholds.delivery_rate.critical, 'critical');
+    else if (metrics.delivery_rate < thresholds.delivery_rate.warning) addAlert('low_delivery_rate', metrics.delivery_rate, thresholds.delivery_rate.warning, 'warning');
+
+    const responseData = {
+      metrics,
+      alerts,
+      events: recentEvents,
+      inboxes: inboxList,
+      inbox_count: allInboxes.length,
+    };
+
+    // Cache the computed result (2min TTL)
+    await overviewCacheService.setCachedOverview(
+      domainId,
+      inboxFilter as string,
+      timeWindow as string,
+      responseData
+    );
+
+    return res.json({ data: responseData });
+  } catch (error) {
+    logger.error('Error computing overview', { error, domainId });
+    return res.status(500).json({ error: 'Failed to compute overview' });
   }
 });
 
@@ -433,7 +645,7 @@ router.get('/monitoring/cache/stats', async (req, res) => {
     const stats = metricsCacheService.getCacheStats();
     return res.json({ data: stats });
   } catch (error) {
-    console.error('Error getting cache stats:', error);
+    logger.error('Error getting cache stats', { error });
     return res.status(500).json({ error: 'Failed to get cache stats' });
   }
 });

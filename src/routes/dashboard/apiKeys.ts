@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { jwtAuth, AuthenticatedRequest } from '../../middleware/jwtAuth';
 import { ApiKeyService } from '../../services/apiKeyService';
+import { requireFeature } from '../../middleware/planGate';
+import logger from '../../utils/logger';
 
 const router = Router();
 
@@ -8,7 +10,7 @@ router.use(jwtAuth);
 
 router.post('/', async (req: AuthenticatedRequest, res) => {
   try {
-    const { name, permissions, expiresIn } = req.body;
+    const { name, permissions, expiresIn, limits } = req.body;
     const userId = req.user!.id;
     const orgId = req.orgId!;
 
@@ -42,7 +44,7 @@ router.post('/', async (req: AuthenticatedRequest, res) => {
       }
     });
   } catch (error) {
-    console.error('API key creation error:', error);
+    logger.error('API key creation error', { error });
     res.status(400).json({ error: 'Failed to create API key' });
   }
 });
@@ -65,7 +67,7 @@ router.get('/', async (req: AuthenticatedRequest, res) => {
       }))
     });
   } catch (error) {
-    console.error('API key listing error:', error);
+    logger.error('API key listing error', { error });
     res.status(500).json({ error: 'Failed to list API keys' });
   }
 });
@@ -94,7 +96,7 @@ router.get('/:keyId', async (req: AuthenticatedRequest, res) => {
       }
     });
   } catch (error) {
-    console.error('API key fetch error:', error);
+    logger.error('API key fetch error', { error });
     res.status(500).json({ error: 'Failed to fetch API key' });
   }
 });
@@ -111,7 +113,7 @@ router.delete('/:keyId', async (req: AuthenticatedRequest, res) => {
 
     res.json({ message: 'API key revoked successfully' });
   } catch (error) {
-    console.error('API key revocation error:', error);
+    logger.error('API key revocation error', { error });
     res.status(500).json({ error: 'Failed to revoke API key' });
   }
 });
@@ -140,8 +142,60 @@ router.post('/:keyId/rotate', async (req: AuthenticatedRequest, res) => {
       }
     });
   } catch (error) {
-    console.error('API key rotation error:', error);
+    logger.error('API key rotation error', { error });
     res.status(500).json({ error: 'Failed to rotate API key' });
+  }
+});
+
+// ─── Per-API-key limits (paid plans only) ────────────────────────
+
+router.put('/:keyId/limits', requireFeature('manualLimits'), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { keyId } = req.params;
+    const orgId = req.orgId!;
+    const { maxInboxes, maxEmailsPerDay } = req.body || {};
+
+    if (maxInboxes !== undefined && (typeof maxInboxes !== 'number' || maxInboxes < 1)) {
+      return res.status(400).json({ error: 'maxInboxes must be a positive number' });
+    }
+    if (maxEmailsPerDay !== undefined && (typeof maxEmailsPerDay !== 'number' || maxEmailsPerDay < 1)) {
+      return res.status(400).json({ error: 'maxEmailsPerDay must be a positive number' });
+    }
+
+    const apiKey = await ApiKeyService.getApiKeyById(keyId);
+    if (!apiKey || apiKey.orgId !== orgId) {
+      return res.status(404).json({ error: 'API key not found' });
+    }
+
+    const limits: { maxInboxes?: number; maxEmailsPerDay?: number } = {};
+    if (maxInboxes !== undefined) limits.maxInboxes = maxInboxes;
+    if (maxEmailsPerDay !== undefined) limits.maxEmailsPerDay = maxEmailsPerDay;
+
+    await ApiKeyService.updateApiKeyLimits(keyId, orgId, limits);
+
+    res.json({ message: 'API key limits updated', limits });
+  } catch (error) {
+    logger.error('API key limits update error', { error });
+    res.status(500).json({ error: 'Failed to update API key limits' });
+  }
+});
+
+router.delete('/:keyId/limits', requireFeature('manualLimits'), async (req: AuthenticatedRequest, res) => {
+  try {
+    const { keyId } = req.params;
+    const orgId = req.orgId!;
+
+    const apiKey = await ApiKeyService.getApiKeyById(keyId);
+    if (!apiKey || apiKey.orgId !== orgId) {
+      return res.status(404).json({ error: 'API key not found' });
+    }
+
+    await ApiKeyService.updateApiKeyLimits(keyId, orgId, undefined);
+
+    res.json({ message: 'API key limits removed' });
+  } catch (error) {
+    logger.error('API key limits removal error', { error });
+    res.status(500).json({ error: 'Failed to remove API key limits' });
   }
 });
 

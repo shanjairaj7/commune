@@ -1,5 +1,6 @@
 import { Router, json } from 'express';
 import { requirePermission } from '../../middleware/permissions';
+import { requireFeature } from '../../middleware/planGate';
 import messageStore from '../../stores/messageStore';
 import logger from '../../utils/logger';
 
@@ -62,7 +63,7 @@ const tryVectorSearch = async (
  *   domain_id - Filter by domain
  *   limit     - Max results (1-100, default 20)
  */
-router.get('/threads', requirePermission('threads:read'), async (req: any, res) => {
+router.get('/threads', requireFeature('semanticSearch'), requirePermission('threads:read'), async (req: any, res) => {
   const orgId = req.orgId;
   const query = (req.query.q as string || '').trim();
   const inboxId = req.query.inbox_id as string | undefined;
@@ -98,6 +99,63 @@ router.get('/threads', requirePermission('threads:read'), async (req: any, res) 
     logger.error('v1: Thread search failed', { orgId, query, error: err });
     return res.status(500).json({ error: 'Search failed' });
   }
+});
+
+/**
+ * POST /v1/search
+ * Deprecated compatibility route for old SDK clients.
+ * Canonical route is GET /v1/search/threads.
+ */
+router.post('/', json(), requireFeature('semanticSearch'), requirePermission('threads:read'), async (req: any, res) => {
+  const query = (req.body?.query as string || '').trim();
+  const filter = req.body?.filter || {};
+  const options = req.body?.options || {};
+  const inboxId = Array.isArray(filter.inboxIds) && filter.inboxIds.length > 0 ? filter.inboxIds[0] : undefined;
+  const domainId = filter.domainId as string | undefined;
+  const limit = Math.min(Math.max(Number(options.limit) || 20, 1), 100);
+
+  if (!query) {
+    return res.status(400).json({ error: 'Missing required field: query' });
+  }
+  if (!inboxId && !domainId) {
+    return res.status(400).json({ error: 'inbox_id or domain_id is required' });
+  }
+
+  try {
+    const orgId = req.orgId;
+    const vectorResults = await tryVectorSearch(orgId, query, inboxId, domainId, limit);
+    if (vectorResults) {
+      return res.json({ data: vectorResults });
+    }
+
+    const results = await messageStore.searchThreads({
+      query,
+      inboxId,
+      domainId,
+      orgId,
+      limit,
+    });
+    return res.json({ data: results });
+  } catch (err) {
+    logger.error('v1: Legacy search endpoint failed', { error: err });
+    return res.status(500).json({ error: 'Search failed' });
+  }
+});
+
+/**
+ * POST /v1/search/index
+ * Deprecated compatibility route. Indexing is automatic.
+ */
+router.post('/index', json(), requireFeature('semanticSearch'), async (_req: any, res) => {
+  return res.json({ data: { success: true } });
+});
+
+/**
+ * POST /v1/search/index/batch
+ * Deprecated compatibility route. Indexing is automatic.
+ */
+router.post('/index/batch', json(), requireFeature('semanticSearch'), async (_req: any, res) => {
+  return res.json({ data: { success: true } });
 });
 
 export default router;

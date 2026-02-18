@@ -8,10 +8,12 @@ import { emailRateLimiter, emailDailyRateLimiter, outboundBurstDetector } from '
 import { validateOutboundContent } from '../../middleware/spamPrevention';
 import { sendingHealthGate } from '../../middleware/sendingHealthGate';
 import { warmupGate } from '../../middleware/warmupGate';
+import { enforceInboxDailyLimit } from '../../middleware/inboxLimits';
+import { enforceApiKeyEmailLimit } from '../../middleware/apiKeyLimits';
 
 const router = Router();
 
-router.post('/email/send', sendingHealthGate, warmupGate, emailRateLimiter, emailDailyRateLimiter, outboundBurstDetector, validateOutboundContent, express.json({ limit: '2mb' }), validate(SendEmailSchema), async (req, res) => {
+router.post('/email/send', sendingHealthGate, warmupGate, emailRateLimiter, emailDailyRateLimiter, outboundBurstDetector, validateOutboundContent, express.json({ limit: '2mb' }), validate(SendEmailSchema), enforceInboxDailyLimit, enforceApiKeyEmailLimit, async (req, res) => {
   const payload = req.body;
   const orgId = (req as any).apiKey?.orgId || null;
 
@@ -51,7 +53,7 @@ router.post('/email/send', sendingHealthGate, warmupGate, emailRateLimiter, emai
   }
 });
 
-router.post('/messages/send', sendingHealthGate, warmupGate, emailRateLimiter, emailDailyRateLimiter, outboundBurstDetector, validateOutboundContent, express.json({ limit: '2mb' }), validate(SendEmailSchema), async (req, res) => {
+router.post('/messages/send', sendingHealthGate, warmupGate, emailRateLimiter, emailDailyRateLimiter, outboundBurstDetector, validateOutboundContent, express.json({ limit: '2mb' }), validate(SendEmailSchema), enforceInboxDailyLimit, enforceApiKeyEmailLimit, async (req, res) => {
   const payload = req.body;
   const orgId = (req as any).apiKey?.orgId || null;
 

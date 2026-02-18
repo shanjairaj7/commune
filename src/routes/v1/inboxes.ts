@@ -2,6 +2,9 @@ import { Router, json } from 'express';
 import { randomUUID } from 'crypto';
 import domainStore from '../../stores/domainStore';
 import { requirePermission } from '../../middleware/permissions';
+import { requireFeature, requireInboxQuota } from '../../middleware/planGate';
+import { inboxRateLimiter } from '../../lib/redisRateLimiter';
+import { enforceApiKeyInboxLimit } from '../../middleware/apiKeyLimits';
 import { OrganizationService } from '../../services/organizationService';
 import { DEFAULT_DOMAIN_ID, DEFAULT_DOMAIN_NAME } from '../../config/freeTierConfig';
 import logger from '../../utils/logger';
@@ -20,7 +23,16 @@ async function resolveDomain(orgId: string): Promise<{ domainId: string; domainN
   // 2. No org-owned domains — use the shared default domain (auto-create if needed)
   let defaultDomain = await domainStore.getDomain(DEFAULT_DOMAIN_ID);
   if (defaultDomain) {
-    return { domainId: defaultDomain.id, domainName: defaultDomain.name || DEFAULT_DOMAIN_NAME };
+    // Keep stored shared default domain name in sync with env config.
+    if (defaultDomain.name !== DEFAULT_DOMAIN_NAME) {
+      defaultDomain = await domainStore.upsertDomain({
+        ...defaultDomain,
+        id: DEFAULT_DOMAIN_ID,
+        name: DEFAULT_DOMAIN_NAME,
+        status: defaultDomain.status || 'verified',
+      });
+    }
+    return { domainId: defaultDomain!.id, domainName: defaultDomain!.name || DEFAULT_DOMAIN_NAME };
   }
 
   // 3. Default domain doesn't exist — create it as a shared domain (no orgId)
@@ -45,7 +57,7 @@ async function resolveDomain(orgId: string): Promise<{ domainId: string; domainN
  *
  * Body: { local_part: string, domain_id?: string, name?: string, webhook?: object }
  */
-router.post('/', json(), requirePermission('inboxes:write'), async (req: any, res) => {
+router.post('/', json(), requireInboxQuota, inboxRateLimiter, enforceApiKeyInboxLimit, requirePermission('inboxes:write'), async (req: any, res) => {
   const orgId = req.orgId;
   const { local_part, localPart, domain_id, domainId: bodyDomainId, name, display_name, displayName: bodyDisplayName, webhook, status } = req.body || {};
 
@@ -167,7 +179,7 @@ router.get('/:domainId/inboxes', requirePermission('inboxes:read'), async (req: 
  * Create a new inbox.
  * Body: { local_part: string, name?: string, webhook?: { endpoint: string, events?: string[] } }
  */
-router.post('/:domainId/inboxes', json(), requirePermission('inboxes:write'), async (req: any, res) => {
+router.post('/:domainId/inboxes', json(), requireInboxQuota, inboxRateLimiter, enforceApiKeyInboxLimit, requirePermission('inboxes:write'), async (req: any, res) => {
   const { domainId } = req.params;
   const orgId = req.orgId;
   const { local_part, localPart, name, display_name, displayName: bodyDisplayName, webhook, status } = req.body || {};
@@ -284,5 +296,105 @@ router.delete('/:domainId/inboxes/:inboxId', requirePermission('inboxes:write'),
     return res.status(500).json({ error: 'Failed to delete inbox' });
   }
 });
+
+/**
+ * PUT /v1/domains/:domainId/inboxes/:inboxId/extraction-schema
+ * Configure structured extraction for an inbox.
+ * Body: { name: string, description?: string, schema: object, enabled?: boolean }
+ */
+router.put(
+  '/:domainId/inboxes/:inboxId/extraction-schema',
+  json(),
+  requirePermission('inboxes:write'),
+  requireFeature('structuredExtraction'),
+  async (req: any, res) => {
+    const { domainId, inboxId } = req.params;
+    const orgId = req.orgId;
+    const { name, description, schema, enabled } = req.body || {};
+
+    if (!name || !schema) {
+      return res.status(400).json({ error: 'Missing required fields: name and schema' });
+    }
+    if (typeof schema !== 'object' || Array.isArray(schema)) {
+      return res.status(400).json({ error: 'Schema must be a valid JSON object' });
+    }
+    if (schema.type !== 'object' || !schema.properties) {
+      return res.status(400).json({
+        error: 'Schema must be a valid JSON Schema with type: "object" and properties',
+      });
+    }
+
+    try {
+      const existing = await domainStore.getInbox(domainId, inboxId, orgId);
+      if (!existing) {
+        return res.status(404).json({ error: 'Inbox not found' });
+      }
+
+      const inbox = await domainStore.upsertInbox({
+        domainId,
+        orgId,
+        inbox: {
+          ...existing,
+          id: inboxId,
+          extractionSchema: {
+            name,
+            description,
+            schema,
+            enabled: enabled !== undefined ? enabled : true,
+          },
+        },
+      });
+
+      logger.info('v1: Extraction schema updated for inbox', {
+        orgId,
+        domainId,
+        inboxId,
+        schemaName: name,
+        enabled: inbox?.extractionSchema?.enabled,
+      });
+
+      return res.json({ data: inbox });
+    } catch (err) {
+      logger.error('v1: Failed to update extraction schema', { orgId, domainId, inboxId, error: err });
+      return res.status(500).json({ error: 'Failed to update extraction schema' });
+    }
+  }
+);
+
+/**
+ * DELETE /v1/domains/:domainId/inboxes/:inboxId/extraction-schema
+ * Remove structured extraction config from an inbox.
+ */
+router.delete(
+  '/:domainId/inboxes/:inboxId/extraction-schema',
+  requirePermission('inboxes:write'),
+  async (req: any, res) => {
+    const { domainId, inboxId } = req.params;
+    const orgId = req.orgId;
+
+    try {
+      const existing = await domainStore.getInbox(domainId, inboxId, orgId);
+      if (!existing) {
+        return res.status(404).json({ error: 'Inbox not found' });
+      }
+
+      const inbox = await domainStore.upsertInbox({
+        domainId,
+        orgId,
+        inbox: {
+          ...existing,
+          id: inboxId,
+          extractionSchema: undefined,
+        },
+      });
+
+      logger.info('v1: Extraction schema removed from inbox', { orgId, domainId, inboxId });
+      return res.json({ data: inbox });
+    } catch (err) {
+      logger.error('v1: Failed to remove extraction schema', { orgId, domainId, inboxId, error: err });
+      return res.status(500).json({ error: 'Failed to remove extraction schema' });
+    }
+  }
+);
 
 export default router;

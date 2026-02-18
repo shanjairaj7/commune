@@ -12,6 +12,8 @@ import adminRoutes from './routes/dashboard/admin';
 import searchRoutes from './routes/dashboard/search';
 import spamRoutes from './routes/dashboard/spam';
 import attachmentRoutes from './routes/dashboard/attachments';
+import billingRoutes from './routes/dashboard/billing';
+import stripeWebhookRoutes from './routes/webhooks/stripe';
 import v1Routes from './routes/v1/index';
 import unsubscribeRoutes from './routes/v1/unsubscribe';
 import startup from './startup';
@@ -25,6 +27,7 @@ import logger from './utils/logger';
 import { getRedisClient } from './lib/redis';
 import { validateSecurityConfig } from './boot/securityBootstrap';
 import { ensureEncryptionKeyIntegrity } from './lib/encryptionKeyGuard';
+import TokenGuard from './lib/tokenGuard';
 import webhookDeliveryService from './services/webhookDeliveryService';
 import realtimeService from './services/realtimeService';
 import { runAllIndexCreation } from './boot/ensureIndexes';
@@ -68,8 +71,9 @@ app.use(auditLog);
 app.use(healthRoutes);
 app.use('/unsubscribe', unsubscribeRoutes);
 
-// Webhook route mounted BEFORE JSON parser to preserve raw body for Svix verification
+// Webhook routes mounted BEFORE JSON parser to preserve raw body for signature verification
 app.use('/api/webhooks/resend', webhookRoutes);
+app.use('/api/webhooks', express.raw({ type: 'application/json' }), stripeWebhookRoutes);
 
 // ─── JSON parser for all remaining routes ────────────────────────
 app.use(express.json({ limit: '10mb' }));
@@ -90,6 +94,7 @@ app.use('/api', combinedAuth, attachApiContext, messageRoutes);
 app.use('/api/search', combinedAuth, attachApiContext, searchRoutes);
 app.use('/api/attachments', combinedAuth, attachApiContext, attachmentRoutes);
 app.use('/api/spam', combinedAuth, attachApiContext, spamRoutes);
+app.use('/api', combinedAuth, attachApiContext, billingRoutes);
 app.use('/api/admin', jwtAuth, adminRoutes);
 
 // ─── Public API v1 (API key auth only) ──────────────────────────
@@ -110,6 +115,14 @@ const httpServer = app.listen(PORT, () => {
     .then(() => logger.info('Encryption key guard passed'))
     .catch((err) => {
       logger.error('Encryption key guard failed — shutting down', { error: err?.message || err });
+      process.exit(1);
+    });
+
+  // Token guard — fatal if tokens changed unexpectedly
+  TokenGuard.validateStartupTokens()
+    .then(() => logger.info('Token guard passed'))
+    .catch((err) => {
+      logger.error('Token guard failed — shutting down', { error: err?.message || err });
       process.exit(1);
     });
 

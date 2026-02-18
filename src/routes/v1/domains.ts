@@ -2,6 +2,11 @@ import { Router, json } from 'express';
 import domainService from '../../services/domainService';
 import domainStore from '../../stores/domainStore';
 import { requirePermission } from '../../middleware/permissions';
+import { requireDomainQuota } from '../../middleware/planGate';
+import { domainRateLimiter } from '../../lib/redisRateLimiter';
+import { getOrgTierLimits, TierType } from '../../config/rateLimits';
+import { OrganizationService } from '../../services/organizationService';
+import { DEFAULT_DOMAIN_ID } from '../../config/freeTierConfig';
 import logger from '../../utils/logger';
 import type { DomainEntry } from '../../types';
 
@@ -35,7 +40,7 @@ router.get('/', requirePermission('domains:read'), async (req: any, res) => {
  * Create a new custom domain.
  * Body: { name: string, region?: string }
  */
-router.post('/', json(), requirePermission('domains:write'), async (req: any, res) => {
+router.post('/', json(), requireDomainQuota, domainRateLimiter, requirePermission('domains:write'), async (req: any, res) => {
   const orgId = req.orgId;
   const { name, region } = req.body || {};
 
@@ -44,6 +49,26 @@ router.post('/', json(), requirePermission('domains:write'), async (req: any, re
   }
 
   try {
+    // Enforce max custom domain count per tier
+    const org = await OrganizationService.getOrganization(orgId);
+    if (org) {
+      const tier = (org.tier || 'free') as TierType;
+      const tierLimits = getOrgTierLimits(tier);
+      if (tierLimits.maxCustomDomains !== Infinity) {
+        const existingDomains = await domainStore.listDomains(orgId);
+        const customDomainCount = existingDomains.filter(d => d.id !== DEFAULT_DOMAIN_ID).length;
+        if (customDomainCount >= tierLimits.maxCustomDomains) {
+          return res.status(403).json({
+            error: `Custom domain limit reached (${customDomainCount}/${tierLimits.maxCustomDomains}). Upgrade your plan for more.`,
+            current_count: customDomainCount,
+            limit: tierLimits.maxCustomDomains,
+            current_tier: tier,
+            upgrade_url: '/dashboard/billing',
+          });
+        }
+      }
+    }
+
     const { data, entry, error } = await domainService.createDomain({
       name,
       region,

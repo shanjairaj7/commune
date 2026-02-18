@@ -14,7 +14,6 @@ import {
   mapBounceType,
   mapWebhookEventType,
   resolveWebhookEmailId,
-  shouldUpdateSentStatus,
 } from '../deliveryEventUtils';
 
 const SOFT_BOUNCE_THRESHOLD = Number(process.env.SOFT_BOUNCE_THRESHOLD || 3);
@@ -84,10 +83,10 @@ const handleDeliveryEvent = async (event: any, domainId?: string) => {
 
   switch (eventType) {
     case 'email.sent':
-      // Confirm sent status without downgrading terminal delivery outcomes.
-      if (shouldUpdateSentStatus(message?.metadata?.delivery_status)) {
-        await messageStore.updateDeliveryStatus(messageId, 'sent', { sent_at: eventCreatedAt }, inboxId);
-      }
+      // Confirm sent status. The DB-layer atomic guard in updateDeliveryStatus
+      // prevents 'sent' from overwriting terminal statuses (delivered/bounced/etc),
+      // so no application-layer check is needed here.
+      await messageStore.updateDeliveryStatus(messageId, 'sent', { sent_at: eventCreatedAt }, inboxId);
       await deliveryEventStore.storeEvent({
         message_id: messageId,
         event_type: 'sent' as const,
@@ -182,6 +181,7 @@ const handleEmailBounced = async (eventCreatedAt: string, data: Record<string, a
       type: 'hard',
       source: 'inbox' as const,
       inbox_id: inboxId,
+      domain_id: domainId,
       message_id: messageId,
       metadata: {
         bounce_reason: bounceReason,
@@ -207,6 +207,7 @@ const handleEmailBounced = async (eventCreatedAt: string, data: Record<string, a
         type: 'soft',
         source: 'inbox' as const,
         inbox_id: inboxId,
+        domain_id: domainId,
         message_id: messageId,
         expires_at: expiresAt,
         metadata: {
@@ -253,6 +254,7 @@ const handleEmailComplained = async (eventCreatedAt: string, data: Record<string
     type: 'spam' as const,
     source: 'inbox' as const,
     inbox_id: inboxId,
+    domain_id: domainId,
     message_id: messageId,
     metadata: {
       complaint_type: extractComplaintType(data) || undefined,
@@ -333,10 +335,9 @@ const handleEmailSuppressed = async (
 
   await messageStore.updateDeliveryStatus(
     messageId,
-    'failed',
+    'suppressed',
     {
-      failed_at: eventCreatedAt,
-      failure_reason: 'suppressed',
+      suppressed_at: eventCreatedAt,
       suppression_reason: suppressionReason,
     },
     inboxId

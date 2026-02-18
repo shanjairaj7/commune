@@ -129,9 +129,6 @@ const listDomains = async () => resend.domains.list();
 
 const getDomain = async (domainId: string) => resend.domains.get(domainId);
 
-// TODO: isnt verifying a domain including dns, dmarc records etc?
-// it is it not just passing the domain id
-// or is this just verifying if the domain is verified or not?
 const verifyDomain = async (domainId: string) => resend.domains.verify(domainId);
 
 const createInboundWebhook = async (domainId: string, endpoint?: string, events?: string[]) => {

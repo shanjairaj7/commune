@@ -11,11 +11,12 @@ interface OrgRequest extends Request {
 export const warmupGate = async (req: OrgRequest, res: Response, next: NextFunction) => {
   try {
     const body = req.body || {};
-    let domainId = body.domainId;
+    let domainId = body.domainId || body.domain_id;
 
     // If inboxId provided, resolve domain from inbox
-    if (!domainId && body.inboxId) {
-      const domainIdFromInbox = await domainStore.getDomainIdByInboxId(body.inboxId);
+    const inboxId = body.inboxId || body.inbox_id;
+    if (!domainId && inboxId) {
+      const domainIdFromInbox = await domainStore.getDomainIdByInboxId(inboxId);
       if (domainIdFromInbox) domainId = domainIdFromInbox;
     }
 

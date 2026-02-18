@@ -2,8 +2,10 @@ import express, { Router } from 'express';
 import { randomUUID } from 'crypto';
 import domainStore from '../../stores/domainStore';
 import { inboxLimiter } from '../../middleware/rateLimiter';
+import { requireFeature, requireInboxQuota } from '../../middleware/planGate';
 import logger from '../../utils/logger';
 import { OrganizationService } from '../../services/organizationService';
+import { getOrgTierLimits, TierType } from '../../config/rateLimits';
 import { DEFAULT_DOMAIN_ID, DEFAULT_DOMAIN_NAME } from '../../config/freeTierConfig';
 
 const router = Router();
@@ -18,7 +20,7 @@ router.get('/domains/:domainId/inboxes', async (req, res) => {
   return res.json({ data: inboxes });
 });
 
-router.post('/domains/:domainId/inboxes', inboxLimiter, express.json(), async (req, res) => {
+router.post('/domains/:domainId/inboxes', inboxLimiter, requireInboxQuota, express.json(), async (req, res) => {
   const { domainId } = req.params;
   const orgId = (req as any).apiKey?.orgId || null;
   if (!orgId) {
@@ -45,6 +47,14 @@ router.post('/domains/:domainId/inboxes', inboxLimiter, express.json(), async (r
     }
 
     let domain = await domainStore.getDomain(domainId);
+    if (domain && domainId === DEFAULT_DOMAIN_ID && domain.name !== DEFAULT_DOMAIN_NAME) {
+      domain = await domainStore.upsertDomain({
+        ...domain,
+        id: DEFAULT_DOMAIN_ID,
+        name: DEFAULT_DOMAIN_NAME,
+        status: domain.status || 'verified',
+      });
+    }
     if (!domain && org.tier === 'free' && domainId === DEFAULT_DOMAIN_ID) {
       domain = await domainStore.upsertDomain({
         id: DEFAULT_DOMAIN_ID,
@@ -159,7 +169,7 @@ router.post(
   '/domains/:domainId/inboxes/:inboxId/webhook',
   express.json(),
   async (req, res) => {
-    console.log('WEBHOOK ROUTE HIT:', req.params, req.body);
+    logger.debug('Webhook route hit', { params: req.params });
     const { domainId, inboxId } = req.params;
     const orgId = (req as any).apiKey?.orgId || null;
     if (!orgId) {
@@ -191,6 +201,7 @@ router.post(
 
 router.put(
   '/domains/:domainId/inboxes/:inboxId/extraction-schema',
+  requireFeature('structuredExtraction'),
   express.json(),
   async (req, res) => {
     const { domainId, inboxId } = req.params;
@@ -279,6 +290,96 @@ router.delete(
       inboxId
     });
 
+    return res.json({ data: inbox });
+  }
+);
+
+// ─── Per-inbox manual limits (paid plans only) ──────────────────
+
+router.get(
+  '/domains/:domainId/inboxes/:inboxId/limits',
+  async (req, res) => {
+    const { domainId, inboxId } = req.params;
+    const orgId = (req as any).apiKey?.orgId || null;
+    if (!orgId) return res.status(403).json({ error: 'Organization not found' });
+
+    const inbox = await domainStore.getInbox(domainId, inboxId, orgId);
+    if (!inbox) return res.status(404).json({ error: 'Inbox not found' });
+
+    const org = await OrganizationService.getOrganization(orgId);
+    const tier = (org?.tier || 'free') as TierType;
+    const tierLimits = getOrgTierLimits(tier);
+
+    return res.json({
+      data: {
+        manual_limits: inbox.limits || null,
+        plan_defaults: {
+          emailsPerInboxPerDay: tierLimits.emailsPerInboxPerDay,
+        },
+        effective: {
+          emailsPerDay: inbox.limits?.emailsPerDay
+            ? Math.min(inbox.limits.emailsPerDay, tierLimits.emailsPerInboxPerDay)
+            : tierLimits.emailsPerInboxPerDay,
+        },
+      },
+    });
+  }
+);
+
+router.put(
+  '/domains/:domainId/inboxes/:inboxId/limits',
+  requireFeature('manualLimits'),
+  express.json(),
+  async (req, res) => {
+    const { domainId, inboxId } = req.params;
+    const orgId = (req as any).apiKey?.orgId || null;
+    if (!orgId) return res.status(403).json({ error: 'Organization not found' });
+
+    const { emailsPerDay, emailsPerHour } = req.body || {};
+
+    if (emailsPerDay !== undefined && (typeof emailsPerDay !== 'number' || emailsPerDay < 1)) {
+      return res.status(400).json({ error: 'emailsPerDay must be a positive number' });
+    }
+    if (emailsPerHour !== undefined && (typeof emailsPerHour !== 'number' || emailsPerHour < 1)) {
+      return res.status(400).json({ error: 'emailsPerHour must be a positive number' });
+    }
+
+    const existing = await domainStore.getInbox(domainId, inboxId, orgId);
+    if (!existing) return res.status(404).json({ error: 'Inbox not found' });
+
+    const limits: { emailsPerDay?: number; emailsPerHour?: number } = {};
+    if (emailsPerDay !== undefined) limits.emailsPerDay = emailsPerDay;
+    if (emailsPerHour !== undefined) limits.emailsPerHour = emailsPerHour;
+
+    const inbox = await domainStore.upsertInbox({
+      domainId,
+      orgId,
+      inbox: { ...existing, id: inboxId, limits },
+    });
+
+    logger.info('Inbox limits updated', { orgId, domainId, inboxId, limits });
+    return res.json({ data: inbox });
+  }
+);
+
+router.delete(
+  '/domains/:domainId/inboxes/:inboxId/limits',
+  requireFeature('manualLimits'),
+  async (req, res) => {
+    const { domainId, inboxId } = req.params;
+    const orgId = (req as any).apiKey?.orgId || null;
+    if (!orgId) return res.status(403).json({ error: 'Organization not found' });
+
+    const existing = await domainStore.getInbox(domainId, inboxId, orgId);
+    if (!existing) return res.status(404).json({ error: 'Inbox not found' });
+
+    const inbox = await domainStore.upsertInbox({
+      domainId,
+      orgId,
+      inbox: { ...existing, id: inboxId, limits: undefined },
+    });
+
+    logger.info('Inbox limits removed', { orgId, domainId, inboxId });
     return res.json({ data: inbox });
   }
 );

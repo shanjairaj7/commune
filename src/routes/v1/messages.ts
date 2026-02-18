@@ -9,6 +9,8 @@ import { emailRateLimiter, emailDailyRateLimiter, outboundBurstDetector } from '
 import { validateOutboundContent } from '../../middleware/spamPrevention';
 import { sendingHealthGate } from '../../middleware/sendingHealthGate';
 import { warmupGate } from '../../middleware/warmupGate';
+import { enforceInboxDailyLimit } from '../../middleware/inboxLimits';
+import { enforceApiKeyEmailLimit } from '../../middleware/apiKeyLimits';
 
 const router = Router();
 
@@ -30,7 +32,7 @@ const router = Router();
  *   inbox_id   - Inbox to send from (optional)
  *   attachments - Array of attachment IDs from upload (optional)
  */
-router.post('/send', sendingHealthGate, warmupGate, emailRateLimiter, emailDailyRateLimiter, outboundBurstDetector, validateOutboundContent, json({ limit: '2mb' }), requirePermission('messages:write'), validate(SendEmailSchema), async (req: any, res) => {
+router.post('/send', sendingHealthGate, warmupGate, emailRateLimiter, emailDailyRateLimiter, outboundBurstDetector, validateOutboundContent, json({ limit: '2mb' }), requirePermission('messages:write'), validate(SendEmailSchema), enforceInboxDailyLimit, enforceApiKeyEmailLimit, async (req: any, res) => {
   const orgId = req.orgId;
   const payload = req.body;
 

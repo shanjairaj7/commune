@@ -394,8 +394,6 @@ export class UserService {
 
     const token = await this.createEmailVerificationToken(user.id, email, 'password_reset');
     await this.sendPasswordResetEmail(email, token.token);
-
-    // TODO: dont need to return anything here?
   }
 
   static async resetPasswordWithToken(token: string, newPassword: string): Promise<boolean> {
