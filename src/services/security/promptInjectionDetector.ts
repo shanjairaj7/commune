@@ -1,42 +1,29 @@
 /**
- * Prompt Injection Detection for AI Agents
+ * Prompt Injection Detection for AI Agents (v2)
  *
- * Scans inbound email content for prompt injection attempts that could
- * hijack AI agents receiving email via Commune webhooks.
+ * Detection-only pipeline:
+ *   canonicalize -> heuristic scoring -> structured LLM adjudication -> fusion.
  *
- * 5 signal categories, weighted:
- *   1. Role Override Patterns (0.35)
- *   2. LLM Delimiter Injection (0.25)
- *   3. Hidden Text Detection (0.20)
- *   4. Data Exfiltration Patterns (0.15)
- *   5. Encoding/Obfuscation (0.05)
- *
- * Detection only — flags in metadata, never blocks delivery.
+ * Never blocks delivery. Returns metadata for downstream agent decisions.
  */
 
-export interface InjectionSignal {
-  score: number;
-  matches: string[];
-  technique?: string;
-}
+import logger from '../../utils/logger';
+import { canonicalizePromptInputs } from './promptCanonicalizer';
+import { PromptSafetyAdjudicatorService } from './promptSafetyAdjudicatorService';
+import { fusePromptRisk } from './promptRiskFusion';
+import type {
+  HeuristicAnalysisResult,
+  InjectionAnalysis,
+  InjectionSignal,
+  PromptInjectionSignals,
+} from './promptDetectionTypes';
 
-export interface InjectionAnalysis {
-  detected: boolean;
-  confidence: number;
-  risk_level: 'none' | 'low' | 'medium' | 'high' | 'critical';
-  signals: {
-    role_override: InjectionSignal;
-    delimiter_injection: InjectionSignal;
-    hidden_text: InjectionSignal;
-    data_exfiltration: InjectionSignal;
-    encoding_obfuscation: InjectionSignal;
-  };
-  summary: string;
-}
-
+const DETECTOR_ENABLED = process.env.PROMPT_INJECTION_DETECTOR_ENABLED !== 'false';
+const SHADOW_MODE = process.env.PROMPT_INJECTION_SHADOW_MODE === 'true';
+const FUSION_VERSION = process.env.PROMPT_INJECTION_FUSION_VERSION || 'v1';
+const DETECTION_POLICY_VERSION = process.env.PROMPT_INJECTION_POLICY_VERSION || 'v2';
 const MAX_ANALYSIS_LENGTH = 50_000;
 
-// ── Signal 1: Role Override Patterns ────────────────────────────────────────
 const ROLE_OVERRIDE_PATTERNS: RegExp[] = [
   /ignore\s+(all\s+)?(previous|prior|above|earlier|preceding)\s+(instructions|prompts|rules|context)/i,
   /ignore\s+your\s+(instructions|programming|rules|guidelines|system\s+prompt)/i,
@@ -57,7 +44,6 @@ const ROLE_OVERRIDE_PATTERNS: RegExp[] = [
   /assume\s+the\s+(role|identity|persona)\s+of/i,
 ];
 
-// ── Signal 2: LLM Delimiter Tokens ─────────────────────────────────────────
 const DELIMITER_PATTERNS: RegExp[] = [
   /\[INST\]/i,
   /\[\/INST\]/i,
@@ -81,7 +67,6 @@ const DELIMITER_PATTERNS: RegExp[] = [
   /<\/system>/i,
 ];
 
-// ── Signal 4: Data Exfiltration Patterns ────────────────────────────────────
 const EXFILTRATION_PATTERNS: RegExp[] = [
   /forward\s+(all|every|each)\s+(email|message|conversation|data)/i,
   /send\s+(all|every|each|the)\s+(data|information|emails|messages|conversations?)\s+to/i,
@@ -99,35 +84,28 @@ const EXFILTRATION_PATTERNS: RegExp[] = [
   /exfiltrate/i,
 ];
 
-// ── Signal 5: Encoding/Obfuscation helpers ──────────────────────────────────
+const SECURITY_CONTEXT_SUPPRESSORS: RegExp[] = [
+  /\bsecurity\s+training\b/i,
+  /\bexample\s+prompt\s+injection\b/i,
+  /\bdetect(ing)?\s+prompt\s+injection\b/i,
+  /\bjailbreak\s+mitigation\b/i,
+  /\bred\s+team(ing)?\b/i,
+  /\bthis\s+is\s+an?\s+example\b/i,
+  /\bfor\s+educational\s+purposes\b/i,
+  /```[\s\S]*?(ignore|system prompt|jailbreak)[\s\S]*?```/i,
+];
+
 const rot13 = (s: string): string =>
   s.replace(/[a-zA-Z]/g, (c) => {
     const base = c <= 'Z' ? 65 : 97;
     return String.fromCharCode(((c.charCodeAt(0) - base + 13) % 26) + base);
   });
 
-const LEETSPEAK_MAP: Record<string, string> = {
-  '0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a',
-};
-
-const decodeLeetspeak = (s: string): string =>
-  s.replace(/[01345@7]/g, (c) => LEETSPEAK_MAP[c] || c);
+const clamp = (value: number, min = 0, max = 1): number => Math.max(min, Math.min(max, value));
 
 class PromptInjectionDetector {
   private static instance: PromptInjectionDetector;
-
-  private readonly WEIGHTS = {
-    role_override: 0.35,
-    delimiter_injection: 0.25,
-    hidden_text: 0.20,
-    data_exfiltration: 0.15,
-    encoding_obfuscation: 0.05,
-  };
-
-  private readonly CRITICAL_THRESHOLD = 0.8;
-  private readonly HIGH_THRESHOLD = 0.6;
-  private readonly MEDIUM_THRESHOLD = 0.4;
-  private readonly LOW_THRESHOLD = 0.2;
+  private readonly adjudicator = PromptSafetyAdjudicatorService.getInstance();
 
   private constructor() {}
 
@@ -138,118 +116,199 @@ class PromptInjectionDetector {
     return PromptInjectionDetector.instance;
   }
 
-  async analyze(content: string, html?: string, subject?: string): Promise<InjectionAnalysis> {
-    const fullText = `${subject || ''} ${content || ''}`.slice(0, MAX_ANALYSIS_LENGTH).toLowerCase();
+  async analyze(
+    content: string,
+    html?: string,
+    subject?: string,
+    options?: { enableAdjudicator?: boolean }
+  ): Promise<InjectionAnalysis> {
+    if (!DETECTOR_ENABLED) {
+      return {
+        detected: false,
+        confidence: 0,
+        risk_level: 'none',
+        signals: {
+          role_override: { score: 0, matches: [] },
+          delimiter_injection: { score: 0, matches: [] },
+          hidden_text: { score: 0, matches: [] },
+          data_exfiltration: { score: 0, matches: [] },
+          encoding_obfuscation: { score: 0, matches: [] },
+        },
+        summary: 'Prompt injection detector disabled',
+        reason_codes: ['detector_disabled'],
+        heuristic_score: 0,
+        model_checked: false,
+        fusion_score: 0,
+        fusion_version: FUSION_VERSION,
+      };
+    }
 
-    const [roleOverride, delimiterInjection, hiddenText, dataExfiltration, encodingObfuscation] =
-      await Promise.all([
-        this.detectRoleOverride(fullText),
-        this.detectDelimiterInjection(fullText),
-        this.detectHiddenText(content || '', html),
-        this.detectDataExfiltration(fullText),
-        this.detectEncodingObfuscation(fullText),
-      ]);
+    const canonical = canonicalizePromptInputs({
+      subject: (subject || '').slice(0, MAX_ANALYSIS_LENGTH),
+      text: (content || '').slice(0, MAX_ANALYSIS_LENGTH),
+      html: (html || '').slice(0, MAX_ANALYSIS_LENGTH),
+    });
 
-    const score =
-      roleOverride.score * this.WEIGHTS.role_override +
-      delimiterInjection.score * this.WEIGHTS.delimiter_injection +
-      hiddenText.score * this.WEIGHTS.hidden_text +
-      dataExfiltration.score * this.WEIGHTS.data_exfiltration +
-      encodingObfuscation.score * this.WEIGHTS.encoding_obfuscation;
+    const heuristic = this.runHeuristicAnalysis(
+      canonical.canonical_text,
+      canonical.raw_compact_text,
+      canonical.hidden_texts
+    );
+    const shouldUseAdjudicator = options?.enableAdjudicator !== false;
+    const adjudicator = shouldUseAdjudicator
+      ? await this.adjudicator.adjudicate(canonical, heuristic)
+      : {
+        checked: false,
+        provider: 'azure-openai-compatible',
+        model_version: process.env.PROMPT_INJECTION_ADJUDICATOR_DEPLOYMENT || process.env.AZURE_OPENAI_DEPLOYMENT || 'grok-3-mini',
+        score: 0,
+        confidence: 0,
+        risk_level: 'none' as const,
+        is_prompt_injection: false,
+        attack_categories: [],
+        exfiltration_intent: false,
+        obfuscation_detected: false,
+        reason_codes: [],
+        error_code: 'adjudicator_plan_gated',
+      };
+    const fusion = fusePromptRisk({
+      heuristic,
+      adjudicator,
+      shadow_mode: SHADOW_MODE,
+      fusion_version: FUSION_VERSION,
+    });
 
-    let risk_level: InjectionAnalysis['risk_level'] = 'none';
-    if (score >= this.CRITICAL_THRESHOLD) risk_level = 'critical';
-    else if (score >= this.HIGH_THRESHOLD) risk_level = 'high';
-    else if (score >= this.MEDIUM_THRESHOLD) risk_level = 'medium';
-    else if (score >= this.LOW_THRESHOLD) risk_level = 'low';
+    if (fusion.detected) {
+      logger.warn('Prompt injection detected', {
+        risk_level: fusion.risk_level,
+        heuristic_score: heuristic.score,
+        model_checked: fusion.model_checked,
+        model_score: fusion.model_score,
+        fusion_score: fusion.score,
+        disagreement: fusion.disagreement,
+        policy_version: DETECTION_POLICY_VERSION,
+      });
+    }
 
     return {
-      detected: score >= this.MEDIUM_THRESHOLD,
-      confidence: Math.round(Math.min(score, 1.0) * 1000) / 1000,
-      risk_level,
-      signals: {
-        role_override: roleOverride,
-        delimiter_injection: delimiterInjection,
-        hidden_text: hiddenText,
-        data_exfiltration: dataExfiltration,
-        encoding_obfuscation: encodingObfuscation,
-      },
-      summary: this.buildSummary(risk_level, {
-        roleOverride,
-        delimiterInjection,
-        hiddenText,
-        dataExfiltration,
-        encodingObfuscation,
-      }),
+      detected: fusion.detected,
+      confidence: fusion.score,
+      risk_level: fusion.risk_level,
+      signals: heuristic.signals,
+      summary: this.buildSummary(fusion.risk_level, heuristic.signals, fusion.reason_codes),
+      reason_codes: fusion.reason_codes,
+      heuristic_score: heuristic.score,
+      model_checked: fusion.model_checked,
+      model_provider: fusion.model_provider,
+      model_version: fusion.model_version,
+      model_score: fusion.model_score,
+      model_error: fusion.model_error,
+      fusion_score: fusion.score,
+      fusion_version: FUSION_VERSION,
+      disagreement: fusion.disagreement,
     };
   }
 
-  // ── Signal Detectors ──────────────────────────────────────────────────────
+  private runHeuristicAnalysis(
+    text: string,
+    rawText: string,
+    hiddenTexts: string[]
+  ): HeuristicAnalysisResult {
+    const roleOverride = this.detectPatternList(text, ROLE_OVERRIDE_PATTERNS, 0.3, 80);
+    const delimiterInjection = this.detectDelimiterInjection(text);
+    const hiddenText = this.detectHiddenText(hiddenTexts);
+    const dataExfiltration = this.detectPatternList(text, EXFILTRATION_PATTERNS, 0.4, 80);
+    const encodingObfuscation = this.detectEncodingObfuscation(rawText);
+    const suppressor = this.detectSuppressor(text);
 
-  private async detectRoleOverride(text: string): Promise<InjectionSignal> {
+    const rawScore = (
+      roleOverride.score * 0.35 +
+      delimiterInjection.score * 0.25 +
+      hiddenText.score * 0.2 +
+      dataExfiltration.score * 0.15 +
+      encodingObfuscation.score * 0.05
+    );
+
+    const suppressionFactor = 1 - (suppressor.score * 0.5);
+    const score = clamp(rawScore * suppressionFactor);
+
+    const reasonCodes: string[] = [];
+    if (roleOverride.score > 0) reasonCodes.push('role_override_detected');
+    if (delimiterInjection.score > 0) reasonCodes.push('delimiter_injection_detected');
+    if (hiddenText.score > 0) reasonCodes.push(`hidden_text_${hiddenText.technique || 'detected'}`);
+    if (dataExfiltration.score > 0) reasonCodes.push('data_exfiltration_detected');
+    if (encodingObfuscation.score > 0) reasonCodes.push('encoding_obfuscation_detected');
+    if (suppressor.score > 0) reasonCodes.push('contextual_suppressor_detected');
+
+    const signals: PromptInjectionSignals = {
+      role_override: roleOverride,
+      delimiter_injection: delimiterInjection,
+      hidden_text: hiddenText,
+      data_exfiltration: dataExfiltration,
+      encoding_obfuscation: encodingObfuscation,
+    };
+
+    return {
+      score: Math.round(score * 1000) / 1000,
+      suppressor_score: suppressor.score,
+      signals,
+      reason_codes: reasonCodes,
+      has_high_confidence_hidden_instruction: hiddenText.technique === 'hidden_instruction',
+      has_exfiltration_intent: dataExfiltration.score >= 0.4,
+      has_obfuscation_intent: encodingObfuscation.score >= 0.25,
+    };
+  }
+
+  private detectPatternList(
+    text: string,
+    patterns: RegExp[],
+    multiplier: number,
+    maxSnippetLength: number
+  ): InjectionSignal {
     const matches: string[] = [];
-    for (const pattern of ROLE_OVERRIDE_PATTERNS) {
+    for (const pattern of patterns) {
       const match = text.match(pattern);
-      if (match) {
-        matches.push(match[0].trim().slice(0, 80));
-      }
+      if (match) matches.push(match[0].trim().slice(0, maxSnippetLength));
     }
     return {
-      score: Math.min(matches.length * 0.3, 1.0),
+      score: clamp(matches.length * multiplier),
       matches,
     };
   }
 
-  private async detectDelimiterInjection(text: string): Promise<InjectionSignal> {
+  private detectDelimiterInjection(text: string): InjectionSignal {
     const matches: string[] = [];
     for (const pattern of DELIMITER_PATTERNS) {
       const match = text.match(pattern);
-      if (match) {
-        matches.push(match[0].trim().slice(0, 40));
-      }
+      if (match) matches.push(match[0].trim().slice(0, 40));
     }
-    // Any single delimiter is highly suspicious — they never appear in normal email
     if (matches.length === 1) return { score: 0.8, matches };
     if (matches.length > 1) return { score: 1.0, matches };
     return { score: 0, matches };
   }
 
-  private async detectHiddenText(content: string, html?: string): Promise<InjectionSignal> {
-    if (!html) return { score: 0, matches: [] };
-
-    const truncatedHtml = html.slice(0, MAX_ANALYSIS_LENGTH);
-    const hiddenTexts = this.extractHiddenText(truncatedHtml);
-
+  private detectHiddenText(hiddenTexts: string[]): InjectionSignal {
     if (hiddenTexts.length === 0) return { score: 0, matches: [] };
-
-    // Run role override patterns on hidden text specifically
     const combinedHidden = hiddenTexts.join(' ').toLowerCase();
-    const injectionInHidden: string[] = [];
+    const hiddenInstructionMatches: string[] = [];
 
     for (const pattern of ROLE_OVERRIDE_PATTERNS) {
       const match = combinedHidden.match(pattern);
-      if (match) {
-        injectionInHidden.push(match[0].trim().slice(0, 80));
-      }
+      if (match) hiddenInstructionMatches.push(match[0].trim().slice(0, 80));
     }
     for (const pattern of EXFILTRATION_PATTERNS) {
       const match = combinedHidden.match(pattern);
-      if (match) {
-        injectionInHidden.push(match[0].trim().slice(0, 80));
-      }
+      if (match) hiddenInstructionMatches.push(match[0].trim().slice(0, 80));
     }
 
-    if (injectionInHidden.length > 0) {
-      // Instructions found hidden from human readers = very high confidence
+    if (hiddenInstructionMatches.length > 0) {
       return {
         score: 1.0,
-        matches: injectionInHidden.slice(0, 5),
+        matches: hiddenInstructionMatches.slice(0, 5),
         technique: 'hidden_instruction',
       };
     }
 
-    // Hidden text exists but doesn't contain injection patterns
-    // Still mildly suspicious if there's a lot of it
     if (hiddenTexts.join('').length > 200) {
       return {
         score: 0.3,
@@ -257,28 +316,12 @@ class PromptInjectionDetector {
         technique: 'hidden_content',
       };
     }
-
     return { score: 0, matches: [] };
   }
 
-  private async detectDataExfiltration(text: string): Promise<InjectionSignal> {
-    const matches: string[] = [];
-    for (const pattern of EXFILTRATION_PATTERNS) {
-      const match = text.match(pattern);
-      if (match) {
-        matches.push(match[0].trim().slice(0, 80));
-      }
-    }
-    return {
-      score: Math.min(matches.length * 0.4, 1.0),
-      matches,
-    };
-  }
-
-  private async detectEncodingObfuscation(text: string): Promise<InjectionSignal> {
+  private detectEncodingObfuscation(text: string): InjectionSignal {
     const matches: string[] = [];
 
-    // Check for ROT13-encoded injection patterns
     const rot13Decoded = rot13(text);
     for (const pattern of ROLE_OVERRIDE_PATTERNS.slice(0, 5)) {
       if (pattern.test(rot13Decoded) && !pattern.test(text)) {
@@ -287,131 +330,78 @@ class PromptInjectionDetector {
       }
     }
 
-    // Check for leetspeak-encoded patterns
-    const leetspeakDecoded = decodeLeetspeak(text);
-    for (const pattern of ROLE_OVERRIDE_PATTERNS.slice(0, 5)) {
-      if (pattern.test(leetspeakDecoded) && !pattern.test(text)) {
-        matches.push('leetspeak_encoded_instruction');
-        break;
-      }
-    }
-
-    // Check for base64 blocks with decode instructions
     if (/base64/i.test(text) && /decode|interpret|execute|run/i.test(text)) {
       const b64Blocks = text.match(/[A-Za-z0-9+/=]{40,}/g);
       if (b64Blocks && b64Blocks.length > 0) {
         try {
-          const decoded = Buffer.from(b64Blocks[0], 'base64').toString('utf8');
-          // Check if decoded content contains injection patterns
-          const lowerDecoded = decoded.toLowerCase();
+          const decoded = Buffer.from(b64Blocks[0], 'base64').toString('utf8').toLowerCase();
           for (const pattern of ROLE_OVERRIDE_PATTERNS.slice(0, 5)) {
-            if (pattern.test(lowerDecoded)) {
+            if (pattern.test(decoded)) {
               matches.push('base64_encoded_instruction');
               break;
             }
           }
         } catch {
-          // Invalid base64 — ignore
+          // Ignore parse failures.
         }
       }
     }
 
-    // Check for excessive Unicode mixing (Cyrillic/Greek lookalikes)
     const cyrillicCount = (text.match(/[\u0400-\u04FF]/g) || []).length;
     const latinCount = (text.match(/[a-zA-Z]/g) || []).length;
     if (cyrillicCount > 5 && latinCount > 5 && cyrillicCount / (cyrillicCount + latinCount) > 0.1) {
       matches.push('mixed_script_obfuscation');
     }
 
-    // Cap at 0.5 to avoid false positives with legitimate encoded content
     return {
       score: Math.min(matches.length * 0.25, 0.5),
       matches,
     };
   }
 
-  // ── HTML Hidden Text Extraction ───────────────────────────────────────────
-
-  private extractHiddenText(html: string): string[] {
-    const hiddenTexts: string[] = [];
-
-    // 1. HTML comments (skip short/empty ones)
-    const commentRegex = /<!--([\s\S]*?)-->/g;
-    let match;
-    while ((match = commentRegex.exec(html)) !== null) {
-      const commentText = match[1].trim();
-      if (commentText.length > 10) {
-        hiddenTexts.push(commentText);
-      }
+  private detectSuppressor(text: string): InjectionSignal {
+    const matches: string[] = [];
+    for (const pattern of SECURITY_CONTEXT_SUPPRESSORS) {
+      const match = text.match(pattern);
+      if (match) matches.push(match[0].trim().slice(0, 80));
     }
-
-    // 2. CSS-hidden elements
-    const hidingPatterns = [
-      /style\s*=\s*"[^"]*display\s*:\s*none[^"]*"[^>]*>([\s\S]*?)<\//gi,
-      /style\s*=\s*"[^"]*visibility\s*:\s*hidden[^"]*"[^>]*>([\s\S]*?)<\//gi,
-      /style\s*=\s*"[^"]*opacity\s*:\s*0[^"]*"[^>]*>([\s\S]*?)<\//gi,
-      /style\s*=\s*"[^"]*font-size\s*:\s*[01]px[^"]*"[^>]*>([\s\S]*?)<\//gi,
-      /style\s*=\s*"[^"]*color\s*:\s*(white|#fff|#ffffff|transparent|rgba\([\d,\s]*0\))[^"]*"[^>]*>([\s\S]*?)<\//gi,
-      /style\s*=\s*"[^"]*position\s*:\s*absolute[^"]*left\s*:\s*-\d+[^"]*"[^>]*>([\s\S]*?)<\//gi,
-    ];
-
-    for (const pattern of hidingPatterns) {
-      pattern.lastIndex = 0; // Reset regex state
-      while ((match = pattern.exec(html)) !== null) {
-        // Get the last capture group (the content)
-        const text = match[match.length - 1]?.replace(/<[^>]+>/g, '').trim();
-        if (text && text.length > 10) {
-          hiddenTexts.push(text);
-        }
-      }
-    }
-
-    // 3. Zero-width characters used to obfuscate text
-    const zwChars = /[\u200B\u200C\u200D\uFEFF\u2060]/g;
-    if (zwChars.test(html)) {
-      const stripped = html.replace(/<[^>]+>/g, '');
-      const withZw = stripped.length;
-      const withoutZw = stripped.replace(/[\u200B\u200C\u200D\uFEFF\u2060]/g, '').length;
-      // If zero-width chars make up >5% of text, flag it
-      if (withZw > 0 && (withZw - withoutZw) / withZw > 0.05) {
-        hiddenTexts.push('[zero-width character obfuscation detected]');
-      }
-    }
-
-    return hiddenTexts;
+    return {
+      score: Math.min(matches.length * 0.2, 1),
+      matches,
+      technique: matches.length ? 'contextual_suppressor' : undefined,
+    };
   }
-
-  // ── Summary Builder ───────────────────────────────────────────────────────
 
   private buildSummary(
     riskLevel: string,
-    signals: {
-      roleOverride: InjectionSignal;
-      delimiterInjection: InjectionSignal;
-      hiddenText: InjectionSignal;
-      dataExfiltration: InjectionSignal;
-      encodingObfuscation: InjectionSignal;
-    }
+    signals: PromptInjectionSignals,
+    reasonCodes: string[]
   ): string {
-    if (riskLevel === 'none') return 'No prompt injection signals detected';
+    if (riskLevel === 'none') {
+      if (reasonCodes.includes('contextual_suppressor_detected')) {
+        return 'Suspicious patterns appeared in likely educational/security context';
+      }
+      return 'No prompt injection signals detected';
+    }
 
     const parts: string[] = [];
-
-    if (signals.roleOverride.score > 0) {
-      parts.push(`role override attempt (${signals.roleOverride.matches.length} patterns)`);
+    if (signals.role_override.score > 0) {
+      parts.push(`role override attempt (${signals.role_override.matches.length} patterns)`);
     }
-    if (signals.delimiterInjection.score > 0) {
-      parts.push(`LLM delimiter tokens (${signals.delimiterInjection.matches.length} found)`);
+    if (signals.delimiter_injection.score > 0) {
+      parts.push(`LLM delimiter tokens (${signals.delimiter_injection.matches.length} found)`);
     }
-    if (signals.hiddenText.score > 0) {
-      const technique = signals.hiddenText.technique || 'hidden content';
-      parts.push(`hidden text: ${technique}`);
+    if (signals.hidden_text.score > 0) {
+      parts.push(`hidden text: ${signals.hidden_text.technique || 'hidden_content'}`);
     }
-    if (signals.dataExfiltration.score > 0) {
-      parts.push(`data exfiltration attempt (${signals.dataExfiltration.matches.length} patterns)`);
+    if (signals.data_exfiltration.score > 0) {
+      parts.push(`data exfiltration attempt (${signals.data_exfiltration.matches.length} patterns)`);
     }
-    if (signals.encodingObfuscation.score > 0) {
-      parts.push(`encoding obfuscation (${signals.encodingObfuscation.matches.join(', ')})`);
+    if (signals.encoding_obfuscation.score > 0) {
+      parts.push(`encoding obfuscation (${signals.encoding_obfuscation.matches.join(', ')})`);
+    }
+    if (reasonCodes.includes('contextual_suppressor_detected')) {
+      parts.push('context suggests educational or defensive discussion');
     }
 
     const prefix = riskLevel === 'critical' || riskLevel === 'high'

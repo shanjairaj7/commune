@@ -12,6 +12,8 @@ import { AttachmentScannerService } from '../security/attachmentScannerService';
 import reputationStore from '../../stores/reputationStore';
 import blockedSpamStore from '../../stores/blockedSpamStore';
 import { PromptInjectionDetector } from '../security/promptInjectionDetector';
+import { resolveOrgTier } from '../../lib/tierResolver';
+import { hasFeature } from '../../config/rateLimits';
 import { registerThreadToken } from '../../lib/threadToken';
 import webhookDeliveryService from '../webhookDeliveryService';
 import realtimeService from '../realtimeService';
@@ -335,17 +337,33 @@ const handleInboundWebhook = async ({
     }
 
     // PROMPT INJECTION DETECTION — Protect AI agents consuming email via webhooks
+    const orgIdForSecurity = inbox?.orgId || resolvedDomain?.orgId;
+    const orgTier = await resolveOrgTier(orgIdForSecurity);
+    const allowLlmAdjudicator = hasFeature(orgTier, 'promptInjection');
+
     const injectionDetector = PromptInjectionDetector.getInstance();
     const injectionAnalysis = await injectionDetector.analyze(
       emailContent,
       emailHtml,
-      emailSubject
+      emailSubject,
+      { enableAdjudicator: allowLlmAdjudicator }
     );
 
     message.metadata.prompt_injection_checked = true;
     message.metadata.prompt_injection_detected = injectionAnalysis.detected;
     message.metadata.prompt_injection_risk = injectionAnalysis.risk_level;
     message.metadata.prompt_injection_score = injectionAnalysis.confidence;
+    message.metadata.prompt_injection_model_checked = injectionAnalysis.model_checked;
+    message.metadata.prompt_injection_model_provider = injectionAnalysis.model_provider;
+    message.metadata.prompt_injection_model_version = injectionAnalysis.model_version;
+    message.metadata.prompt_injection_model_score = injectionAnalysis.model_score;
+    message.metadata.prompt_injection_model_error = injectionAnalysis.model_error;
+    message.metadata.prompt_injection_model_tier = orgTier;
+    message.metadata.prompt_injection_model_allowed = allowLlmAdjudicator;
+    message.metadata.prompt_injection_fusion_score = injectionAnalysis.fusion_score;
+    message.metadata.prompt_injection_fusion_version = injectionAnalysis.fusion_version;
+    message.metadata.prompt_injection_reason_codes = injectionAnalysis.reason_codes;
+    message.metadata.prompt_injection_disagreement = injectionAnalysis.disagreement;
     if (injectionAnalysis.detected) {
       message.metadata.prompt_injection_signals = injectionAnalysis.summary;
       logger.warn('Prompt injection detected', {
@@ -493,6 +511,17 @@ const handleInboundWebhook = async ({
             risk_level: injectionAnalysis.risk_level,
             confidence: injectionAnalysis.confidence,
             summary: injectionAnalysis.detected ? injectionAnalysis.summary : undefined,
+            model_checked: injectionAnalysis.model_checked,
+            model_provider: injectionAnalysis.model_provider,
+            model_version: injectionAnalysis.model_version,
+            model_score: injectionAnalysis.model_score,
+            model_error: injectionAnalysis.model_error,
+            model_tier: orgTier,
+            model_allowed: allowLlmAdjudicator,
+            fusion_score: injectionAnalysis.fusion_score,
+            fusion_version: injectionAnalysis.fusion_version,
+            reason_codes: injectionAnalysis.reason_codes,
+            disagreement: injectionAnalysis.disagreement,
           },
         },
       };

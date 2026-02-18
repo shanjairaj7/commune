@@ -47,6 +47,17 @@ export interface MessageMetadata {
   prompt_injection_risk?: 'none' | 'low' | 'medium' | 'high' | 'critical';
   prompt_injection_score?: number;
   prompt_injection_signals?: string;
+  prompt_injection_model_checked?: boolean;
+  prompt_injection_model_provider?: string;
+  prompt_injection_model_version?: string;
+  prompt_injection_model_score?: number;
+  prompt_injection_model_error?: string;
+  prompt_injection_model_tier?: 'free' | 'agent_pro' | 'business' | 'enterprise';
+  prompt_injection_model_allowed?: boolean;
+  prompt_injection_fusion_score?: number;
+  prompt_injection_fusion_version?: string;
+  prompt_injection_reason_codes?: string[];
+  prompt_injection_disagreement?: 'model_high_rule_low' | 'rule_high_model_low';
   attachment_ids?: string[];
   has_attachments?: boolean;
   attachment_count?: number;
