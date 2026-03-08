@@ -209,6 +209,16 @@ npm run build    # Compiles TypeScript to dist/
 npm start        # Runs the compiled server
 ```
 
+## Ecosystem
+
+| Package | Description |
+|---------|-------------|
+| **[commune](https://github.com/shanjai-raj/commune)** | **Email & SMS infrastructure — self-hostable backend** |
+| [commune-ai](https://github.com/shanjai-raj/commune-ai) | TypeScript/Node.js SDK |
+| [commune-python](https://github.com/shanjai-raj/commune-python) | Python SDK |
+| [commune-mcp](https://github.com/shanjai-raj/commune-mcp) | MCP server for Claude Desktop, Cursor, Windsurf |
+| [commune-cli](https://github.com/shanjai-raj/commune-cli) | Command-line interface |
+
 ## License
 
-Business Source License 1.1 — see [LICENSE.md](./LICENSE.md).
+Apache License 2.0 — see [LICENSE.md](./LICENSE.md).
