@@ -12,6 +12,7 @@ export interface PromptInjectionSignals {
   hidden_text: InjectionSignal;
   data_exfiltration: InjectionSignal;
   encoding_obfuscation: InjectionSignal;
+  output_specification: InjectionSignal;
 }
 
 export interface HeuristicAnalysisResult {

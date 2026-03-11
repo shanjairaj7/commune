@@ -44,12 +44,6 @@ const ROLE_OVERRIDE_PATTERNS: RegExp[] = [
   /assume\s+the\s+(role|identity|persona)\s+of/i,
   // Conditional AI-targeting injections ("If you are an AI / LLM / assistant...")
   /if\s+you\s+are\s+(a\s+|an\s+)?(ai|llm|language\s+model|assistant|bot|chatbot|gpt)\b/i,
-  // Output-specification injections ("start your response by saying / begin with / respond with")
-  /\b(start|begin)\s+your\s+response\s+by\s+(saying|stating|writing|responding)\b/i,
-  /\brespond\s+(by\s+saying|with\s+the\s+(phrase|words?|text|following))\b/i,
-  /\byour\s+(first|opening|initial)\s+(word|sentence|line|response)\s+(should|must|needs?\s+to)\s+be\b/i,
-  /\bsay\s+exactly\s*:/i,
-  /\bsay\s+the\s+following\s*:/i,
 ];
 
 const DELIMITER_PATTERNS: RegExp[] = [
@@ -134,6 +128,19 @@ const DELAYED_TRIGGER_PATTERNS: RegExp[] = [
   /\bfor\s+future\s+messages\b/i,
   /\bfrom\s+that\s+point\s+on\b/i,
   /\bif\s+the\s+user\s+asks\b/i,
+];
+
+// Attacker explicitly specifies the AI's output content — a distinct attack class from
+// role override (which targets identity) and exfiltration (which targets data).
+// These patterns tell the AI *what words to produce*, not *who to be*.
+const OUTPUT_SPECIFICATION_PATTERNS: RegExp[] = [
+  /\b(start|begin)\s+your\s+response\s+by\s+(saying|stating|writing|responding)\b/i,
+  /\brespond\s+(by\s+saying|with\s+the\s+(phrase|words?|text|following))\b/i,
+  /\byour\s+(first|opening|initial)\s+(word|sentence|line|response)\s+(should|must|needs?\s+to)\s+be\b/i,
+  /\bsay\s+exactly\s*:/i,
+  /\bsay\s+the\s+following\s*:/i,
+  /\breply\s+with\s+only\s+the\s+(word|phrase|text|following)\b/i,
+  /\bwrite\s+only\s*(:\s*)?(the\s+)?(word|phrase|text|following|this)\b/i,
 ];
 
 const MANY_SHOT_COERCION_PATTERNS: RegExp[] = [
@@ -283,6 +290,7 @@ class PromptInjectionDetector {
     const dataExfiltration = this.detectPatternList(text, EXFILTRATION_PATTERNS, 0.4, 80);
     const encodingObfuscation = this.detectEncodingObfuscation(rawText);
     const toolPoisoning = this.detectPatternList(text, TOOL_POISONING_PATTERNS, 0.35, 90);
+    const outputSpecification = this.detectPatternList(text, OUTPUT_SPECIFICATION_PATTERNS, 0.35, 90);
     const authorityImpersonation = this.detectPatternList(text, AUTHORITY_IMPERSONATION_PATTERNS, 0.3, 90);
     const delayedTrigger = this.detectPatternList(text, DELAYED_TRIGGER_PATTERNS, 0.2, 90);
     const manyShotCoercion = this.detectPatternList(text, MANY_SHOT_COERCION_PATTERNS, 0.2, 90);
@@ -295,6 +303,7 @@ class PromptInjectionDetector {
       dataExfiltration.score * 0.18 +
       encodingObfuscation.score * 0.08 +
       toolPoisoning.score * 0.09 +
+      outputSpecification.score * 0.10 +
       authorityImpersonation.score * 0.05 +
       delayedTrigger.score * 0.02 +
       manyShotCoercion.score * 0.02
@@ -339,6 +348,10 @@ class PromptInjectionDetector {
     if (roleOverride.score >= 0.3 && encodingObfuscation.score >= 0.25) {
       conjunctionBoost += 0.12;
     }
+    // AI-targeting + explicit output command = deliberate behavioral hijack
+    if (roleOverride.score >= 0.3 && outputSpecification.score >= 0.35) {
+      conjunctionBoost += 0.30;
+    }
 
     const rawScore = clamp(baseScore + conjunctionBoost);
 
@@ -361,6 +374,8 @@ class PromptInjectionDetector {
     if (hasSensitiveExfiltration) reasonCodes.push('sensitive_exfiltration_detected');
     if (encodingObfuscation.score > 0) reasonCodes.push('encoding_obfuscation_detected');
     if (toolPoisoning.score > 0) reasonCodes.push('tool_poisoning_detected');
+    if (outputSpecification.score > 0) reasonCodes.push('output_specification_detected');
+    if (roleOverride.score >= 0.3 && outputSpecification.score >= 0.35) reasonCodes.push('ai_targeting_output_hijack_combo');
     if (authorityImpersonation.score > 0) reasonCodes.push('authority_impersonation_detected');
     if (delayedTrigger.score > 0) reasonCodes.push('delayed_trigger_detected');
     if (manyShotCoercion.score > 0) reasonCodes.push('many_shot_coercion_detected');
@@ -384,6 +399,7 @@ class PromptInjectionDetector {
       hidden_text: hiddenText,
       data_exfiltration: dataExfiltration,
       encoding_obfuscation: encodingObfuscation,
+      output_specification: outputSpecification,
     };
 
     return {
