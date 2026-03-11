@@ -42,6 +42,14 @@ const ROLE_OVERRIDE_PATTERNS: RegExp[] = [
   /pretend\s+(you\s+are|to\s+be|that\s+you)/i,
   /roleplay\s+as/i,
   /assume\s+the\s+(role|identity|persona)\s+of/i,
+  // Conditional AI-targeting injections ("If you are an AI / LLM / assistant...")
+  /if\s+you\s+are\s+(a\s+|an\s+)?(ai|llm|language\s+model|assistant|bot|chatbot|gpt)\b/i,
+  // Output-specification injections ("start your response by saying / begin with / respond with")
+  /\b(start|begin)\s+your\s+response\s+by\s+(saying|stating|writing|responding)\b/i,
+  /\brespond\s+(by\s+saying|with\s+the\s+(phrase|words?|text|following))\b/i,
+  /\byour\s+(first|opening|initial)\s+(word|sentence|line|response)\s+(should|must|needs?\s+to)\s+be\b/i,
+  /\bsay\s+exactly\s*:/i,
+  /\bsay\s+the\s+following\s*:/i,
 ];
 
 const DELIMITER_PATTERNS: RegExp[] = [
