@@ -7,6 +7,15 @@ import { encryptSecretField, decryptSecretField } from '../lib/encryption';
 
 type DomainDocument = WithId<DomainEntry>;
 
+// 60s TTL domain cache — invalidated on any write
+const domainCache = new Map<string, { domain: DomainEntry; expiresAt: number }>();
+const domainInFlight = new Map<string, Promise<DomainEntry | null>>();
+const DOMAIN_CACHE_TTL_MS = 60 * 1000;
+
+// Cache inbox→domainId mapping (stable, 5min TTL)
+const inboxToDomainCache = new Map<string, { domainId: string; expiresAt: number }>();
+const INBOX_DOMAIN_CACHE_TTL_MS = 5 * 60 * 1000;
+
 const getDomainsCollection = async () => {
   return getCollection<DomainDocument>('domains');
 };
@@ -71,16 +80,28 @@ const encryptDomainSecrets = (domain: DomainEntry): DomainEntry => {
 };
 
 const getDomain = async (id: string) => {
-  const collection = await getDomainsCollection();
-  if (!collection) {
-    return null;
-  }
+  const cached = domainCache.get(id);
+  if (cached && cached.expiresAt > Date.now()) return cached.domain;
 
-  const document = await collection.findOne({ id });
-  if (!document) {
-    return null;
+  const existing = domainInFlight.get(id);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    const collection = await getDomainsCollection();
+    if (!collection) return null;
+    const document = await collection.findOne({ id });
+    if (!document) return null;
+    const domain = decryptDomainSecrets(stripId(document));
+    domainCache.set(id, { domain, expiresAt: Date.now() + DOMAIN_CACHE_TTL_MS });
+    return domain;
+  })();
+
+  domainInFlight.set(id, promise);
+  try {
+    return await promise;
+  } finally {
+    domainInFlight.delete(id);
   }
-  return decryptDomainSecrets(stripId(document));
 };
 
 const getDomainByName = async (name: string) => {
@@ -110,6 +131,7 @@ const upsertDomain = async (entry: DomainEntry) => {
 
   const encrypted = encryptDomainSecrets(entryWithoutId as DomainEntry);
   await collection.updateOne({ id: entry.id }, { $set: encrypted as Partial<DomainDocument> }, { upsert: true });
+  domainCache.delete(entry.id);
   return entry;
 };
 
@@ -206,12 +228,16 @@ const getInboxById = async (inboxId: string, orgId?: string) => {
 };
 
 const getDomainIdByInboxId = async (inboxId: string) => {
+  const cached = inboxToDomainCache.get(inboxId);
+  if (cached && cached.expiresAt > Date.now()) return cached.domainId;
+
   const collection = await getDomainsCollection();
-  if (!collection) {
-    return null;
-  }
+  if (!collection) return null;
 
   const domain = await collection.findOne({ 'inboxes.id': inboxId }, { projection: { id: 1 } });
+  if (domain?.id) {
+    inboxToDomainCache.set(inboxId, { domainId: domain.id, expiresAt: Date.now() + INBOX_DOMAIN_CACHE_TTL_MS });
+  }
   return domain?.id || null;
 };
 
@@ -336,6 +362,7 @@ const removeInbox = async (domainId: string, inboxId: string, orgId?: string) =>
 
   const next = domain.inboxes.filter((inbox) => inbox.id !== inboxId);
   await upsertDomain({ ...domain, inboxes: next });
+  inboxToDomainCache.delete(inboxId);
   return next.length !== domain.inboxes.length;
 };
 
