@@ -132,6 +132,7 @@ router.get('/suppressions', json(), requirePermission('messages:read'), async (r
         limit,
       });
     }
+    res.set('Cache-Control', 'private, max-age=30, stale-while-revalidate=60');
     return res.json({ data: suppressions });
   } catch (err) {
     logger.error('v1: Failed to get suppressions', { orgId, inboxId, domainId, error: err });

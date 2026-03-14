@@ -11,6 +11,7 @@ const router = Router();
 router.get('/', async (req: any, res) => {
   try {
     const balance = await creditStore.getBalance(req.orgId);
+    res.set('Cache-Control', 'private, max-age=10, stale-while-revalidate=20');
     return res.json({ data: balance });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -75,6 +76,7 @@ router.get('/bundles', async (_req, res) => {
     price: b.price,
     price_per_credit: (b.price / b.credits).toFixed(4),
   }));
+  res.set('Cache-Control', 'public, max-age=3600, stale-while-revalidate=86400');
   return res.json({ data: bundles });
 });
 

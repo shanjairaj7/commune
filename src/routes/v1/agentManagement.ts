@@ -28,6 +28,7 @@ router.get('/org', async (req: any, res) => {
   try {
     const org = await OrganizationService.getOrganization(req.orgId);
     if (!org) return res.status(404).json({ error: 'Organization not found' });
+    res.set('Cache-Control', 'private, max-age=30, stale-while-revalidate=60');
     return res.json({ org });
   } catch (err) {
     logger.error('Agent GET org error', { err });
@@ -68,6 +69,7 @@ router.patch('/org', async (req: any, res) => {
 router.get('/api-keys', async (req: any, res) => {
   try {
     const keys = await ApiKeyService.listApiKeys(req.orgId);
+    res.set('Cache-Control', 'private, max-age=30, stale-while-revalidate=60');
     return res.json({
       apiKeys: keys.map(k => ({
         id: k.id,

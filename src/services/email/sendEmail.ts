@@ -78,19 +78,26 @@ const buildFromAddress = async ({
 
   if (effectiveDomainId) {
     if (inboxId) {
-      const inbox = await domainStore.getInbox(effectiveDomainId, inboxId);
+      // Fetch inbox and domain in parallel — both are needed regardless of inbox.localPart
+      const [inbox, entry] = await Promise.all([
+        domainStore.getInbox(effectiveDomainId, inboxId),
+        domainStore.getDomain(effectiveDomainId),
+      ]);
       const displayName = inbox?.displayName || inbox?.agent?.name || null;
-      if (inbox?.localPart) {
-        const entry = await domainStore.getDomain(effectiveDomainId);
-        if (entry?.name) {
-          // Prefer current domain name over persisted inbox.address so
-          // shared-domain renames take effect immediately.
-          const rawAddr = `${inbox.localPart}@${entry.name}`;
-          return { address: formatFromWithDisplayName(rawAddr, displayName), resolvedDomainId: effectiveDomainId };
-        }
+      if (inbox?.localPart && entry?.name) {
+        // Prefer current domain name over persisted inbox.address so
+        // shared-domain renames take effect immediately.
+        const rawAddr = `${inbox.localPart}@${entry.name}`;
+        return { address: formatFromWithDisplayName(rawAddr, displayName), resolvedDomainId: effectiveDomainId };
       }
       if (inbox?.address) {
         return { address: formatFromWithDisplayName(inbox.address, displayName), resolvedDomainId: effectiveDomainId };
+      }
+      if (entry?.name) {
+        return { address: `${resolvedLocal}@${entry.name}`, resolvedDomainId: effectiveDomainId };
+      }
+      if (domain) {
+        return { address: `${resolvedLocal}@${domain}`, resolvedDomainId: effectiveDomainId };
       }
     }
 
@@ -146,14 +153,15 @@ const sendEmail = async (payload: SendMessagePayload & { orgId?: string }) => {
   const unsuppressedRecipients: string[] = [];
   const suppressedRecipients: string[] = [];
 
-  for (const recipient of recipients) {
-    const isSuppressed = await suppressionStore.isSuppressed(recipient, payload.inboxId);
-
-    if (!isSuppressed) {
-      unsuppressedRecipients.push(recipient);
+  const suppressionResults = await Promise.all(
+    recipients.map(r => suppressionStore.isSuppressed(r, payload.inboxId))
+  );
+  for (let i = 0; i < recipients.length; i++) {
+    if (!suppressionResults[i]) {
+      unsuppressedRecipients.push(recipients[i]);
     } else {
-      suppressedRecipients.push(recipient);
-      logger.debug('Skipping suppressed recipient', { recipient });
+      suppressedRecipients.push(recipients[i]);
+      logger.debug('Skipping suppressed recipient', { recipient: recipients[i] });
     }
   }
 
