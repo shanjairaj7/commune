@@ -284,9 +284,9 @@ const sendEmail = async (payload: SendMessagePayload & { orgId?: string }) => {
     }
   }
 
-  const toRecipients: string[] = validRecipients.length === recipients.length ? (Array.isArray(payload.to) ? payload.to as string[] : [payload.to as string]) : validRecipients;
-  const ccRecipients: string[] | undefined = payload.cc ? (Array.isArray(payload.cc) ? payload.cc as string[] : [payload.cc as string]) : undefined;
-  const bccRecipients: string[] | undefined = payload.bcc ? (Array.isArray(payload.bcc) ? payload.bcc as string[] : [payload.bcc as string]) : undefined;
+  const toRecipients = validRecipients.length === recipients.length ? (Array.isArray(payload.to) ? payload.to : [payload.to]) : validRecipients;
+  const ccRecipients = payload.cc ? (Array.isArray(payload.cc) ? payload.cc : [payload.cc]) : undefined;
+  const bccRecipients = payload.bcc ? (Array.isArray(payload.bcc) ? payload.bcc : [payload.bcc]) : undefined;
 
   // Build raw MIME message only when attachments are present
   // For plain text/HTML sends, use the structured SendEmailCommand (simpler + cheaper)
@@ -335,13 +335,11 @@ const sendEmail = async (payload: SendMessagePayload & { orgId?: string }) => {
       const res = await sesClient.send(new SendEmailCommand({
         FromEmailAddress: fromAddress,
         Destination: {
-          ToAddresses: toRecipients,
-          CcAddresses: ccRecipients,
-          BccAddresses: bccRecipients,
+          ToAddresses: toRecipients as string[],
+          CcAddresses: ccRecipients as string[] | undefined,
+          BccAddresses: bccRecipients as string[] | undefined,
         },
-        ReplyToAddresses: replyToAddress
-          ? (Array.isArray(replyToAddress) ? replyToAddress as string[] : [replyToAddress as string])
-          : undefined,
+        ReplyToAddresses: replyToAddress ? [replyToAddress] : undefined,
         Content: {
           Simple: {
             Subject: { Data: subject, Charset: 'UTF-8' },

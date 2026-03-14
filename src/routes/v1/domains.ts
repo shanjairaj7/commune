@@ -26,7 +26,6 @@ router.get('/', requirePermission('domains:read'), async (req: any, res) => {
   const orgId = req.orgId;
   try {
     const domains = await domainStore.listDomains(orgId);
-    res.set('Cache-Control', 'private, max-age=30, stale-while-revalidate=60');
     return res.json({
       data: domains.map(sanitizeDomain),
     });

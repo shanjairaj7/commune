@@ -583,7 +583,7 @@ const NEGATIVE_TERMINAL_STATUSES = ['bounced', 'failed', 'complained', 'suppress
 
 const updateDeliveryStatus = async (
   messageId: string,
-  status: 'sent' | 'delivered' | 'bounced' | 'failed' | 'complained' | 'suppressed' | 'opened',
+  status: 'sent' | 'delivered' | 'bounced' | 'failed' | 'complained' | 'suppressed',
   data?: any,
   inboxId?: string
 ) => {
