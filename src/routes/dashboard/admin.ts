@@ -60,7 +60,7 @@ router.post('/migrate/domains', async (_req, res) => {
     return res.status(400).json({ error });
   }
 
-  const list = data?.data || [];
+  const list = (Array.isArray(data) ? data : (data as any)?.data) || [];
   const updated: Array<{ id: string; name: string }> = [];
 
   for (const domain of list) {
