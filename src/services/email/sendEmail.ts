@@ -345,7 +345,9 @@ const sendEmail = async (payload: SendMessagePayload & { orgId?: string }) => {
           CcAddresses: ccRecipients as string[] | undefined,
           BccAddresses: bccRecipients as string[] | undefined,
         },
-        ReplyToAddresses: replyToAddress ? [replyToAddress] : undefined,
+        ReplyToAddresses: replyToAddress
+          ? ([] as string[]).concat(replyToAddress as string | string[])
+          : undefined,
         Content: {
           Simple: {
             Subject: { Data: subject, Charset: 'UTF-8' },
