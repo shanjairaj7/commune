@@ -22,6 +22,7 @@ import stripeWebhookRoutes from './routes/webhooks/stripe';
 import twilioWebhookRoutes from './routes/webhooks/twilio';
 import sesWebhookRoutes from './routes/webhooks/ses';
 import v1Routes from './routes/v1/index';
+import oauthRoutes from './routes/oauth/index';
 import unsubscribeRoutes from './routes/v1/unsubscribe';
 import startup from './startup';
 import { combinedAuth } from './middleware/combinedAuth';
@@ -139,6 +140,9 @@ app.use('/api', combinedAuth, attachApiContext, phoneSettingsRoutes);
 app.use('/api/phone-numbers', combinedAuth, attachApiContext, phoneNumberRoutes);
 app.use('/api/sms', combinedAuth, attachApiContext, smsRoutes);
 app.use('/api/admin', jwtAuth, adminRoutes);
+
+// ─── Commune OAuth Provider ("Continue with Commune") ────────────
+app.use('/oauth', oauthRoutes);
 
 // ─── Public API v1 (API key auth only) ──────────────────────────
 app.use('/v1', v1Routes);

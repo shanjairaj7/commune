@@ -18,6 +18,10 @@ import deletionRequestStore from '../stores/deletionRequestStore';
 import TokenGuard from '../lib/tokenGuard';
 import { AgentIdentityStore } from '../stores/agentIdentityStore';
 import { AgentSignupStore } from '../stores/agentSignupStore';
+import { OAuthClientStore } from '../stores/oauthClientStore';
+import { OAuthCodeStore } from '../stores/oauthCodeStore';
+import { OAuthTokenStore } from '../stores/oauthTokenStore';
+import { OAuthRefreshTokenStore } from '../stores/oauthRefreshTokenStore';
 import * as callStore from '../stores/callStore';
 import { ensureVoiceIndexes } from '../stores/voiceIndexes';
 
@@ -53,6 +57,10 @@ export const runAllIndexCreation = async (): Promise<void> => {
     { name: 'agentSignupStore', fn: () => AgentSignupStore.ensureIndexes() },
     { name: 'callStore', fn: () => callStore.ensureIndexes() },
     { name: 'voiceIndexes', fn: () => ensureVoiceIndexes() },
+    { name: 'oauthClientStore', fn: () => OAuthClientStore.ensureIndexes() },
+    { name: 'oauthCodeStore', fn: () => OAuthCodeStore.ensureIndexes() },
+    { name: 'oauthTokenStore', fn: () => OAuthTokenStore.ensureIndexes() },
+    { name: 'oauthRefreshTokenStore', fn: () => OAuthRefreshTokenStore.ensureIndexes() },
   ];
 
   logger.info('Running database index creation', { count: tasks.length });
