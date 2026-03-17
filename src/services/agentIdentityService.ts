@@ -19,7 +19,7 @@ const TIMESTAMP_TOLERANCE_MS = 60_000; // ±60 seconds
 const DEFAULT_DOMAIN_ID = process.env.DEFAULT_DOMAIN_ID || '';
 const DEFAULT_DOMAIN_NAME = process.env.DEFAULT_DOMAIN_NAME || 'commune.email';
 
-const EMAIL_FROM = process.env.AUTH_EMAIL_FROM || process.env.DEFAULT_FROM_EMAIL || 'no-reply@commune.email';
+const EMAIL_FROM = process.env.DEFAULT_FROM_EMAIL || 'noreply@commune.email';
 const FRONTEND_URL = process.env.FRONTEND_URL || process.env.FRONTEND_BASE_URL || 'http://localhost:3000';
 const CONFIG_SET = 'commune-sending';
 
