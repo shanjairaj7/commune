@@ -18,6 +18,7 @@ import deletionRequestStore from '../stores/deletionRequestStore';
 import TokenGuard from '../lib/tokenGuard';
 import { AgentIdentityStore } from '../stores/agentIdentityStore';
 import { AgentSignupStore } from '../stores/agentSignupStore';
+import { AgentClaimStore } from '../stores/agentClaimStore';
 import { OAuthClientStore } from '../stores/oauthClientStore';
 import { OAuthCodeStore } from '../stores/oauthCodeStore';
 import { OAuthTokenStore } from '../stores/oauthTokenStore';
@@ -55,6 +56,7 @@ export const runAllIndexCreation = async (): Promise<void> => {
     { name: 'tokenGuard', fn: () => TokenGuard.ensureIndexes() },
     { name: 'agentIdentityStore', fn: () => AgentIdentityStore.ensureIndexes() },
     { name: 'agentSignupStore', fn: () => AgentSignupStore.ensureIndexes() },
+    { name: 'agentClaimStore', fn: () => AgentClaimStore.ensureIndexes() },
     { name: 'callStore', fn: () => callStore.ensureIndexes() },
     { name: 'voiceIndexes', fn: () => ensureVoiceIndexes() },
     { name: 'oauthClientStore', fn: () => OAuthClientStore.ensureIndexes() },

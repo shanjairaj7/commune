@@ -205,13 +205,20 @@ router.post('/agent-verify', verifyRateLimit, async (req: Request, res: Response
       agentId: result.agentId,
       orgId: result.orgId,
       inboxEmail: result.inboxEmail,
+      ownershipStatus: result.ownershipStatus,
+      nextStep: result.nextStep,
       message: [
         'Registration complete. Store these permanently:',
         `  export COMMUNE_AGENT_ID="${result.agentId}"`,
         '  export COMMUNE_PRIVATE_KEY="<your_private_key_base64>"',
         '',
         `Your inbox is ready: ${result.inboxEmail}`,
-        'Sign every request: Authorization: Agent {COMMUNE_AGENT_ID}:{ed25519_signature}',
+        '',
+        'IMPORTANT: Before you can send emails or create additional inboxes,',
+        'your owner must claim this agent. Call:',
+        '  POST /v1/agent/claim-ownership  { "ownerEmail": "<owner_email>" }',
+        '',
+        'You can receive and read emails immediately while waiting for the claim.',
       ].join('\n'),
     });
   } catch (err: any) {
@@ -226,6 +233,63 @@ router.post('/agent-verify', verifyRateLimit, async (req: Request, res: Response
     }
     logger.error('Agent challenge verification error', { err });
     return res.status(500).json({ error: 'verification_failed', message: 'Verification failed' });
+  }
+});
+
+/**
+ * GET /v1/auth/claim/:token
+ *
+ * Public route — no auth required. Frontend fetches claim details to render
+ * the claim page. The token itself is the auth (like a password reset link).
+ */
+router.get('/claim/:token', async (req: Request, res: Response) => {
+  const { token } = req.params;
+
+  if (!token || typeof token !== 'string' || token.length !== 64) {
+    return res.status(400).json({ error: 'invalid_token', message: 'Invalid claim token' });
+  }
+
+  try {
+    const details = await AgentIdentityService.getClaimDetails(token);
+    if (!details) {
+      return res.status(404).json({ error: 'not_found', message: 'This claim link has expired or is invalid.' });
+    }
+    return res.json(details);
+  } catch (err: any) {
+    logger.error('Get claim details error', { err });
+    return res.status(500).json({ error: 'Failed to get claim details' });
+  }
+});
+
+/**
+ * POST /v1/auth/claim/:token/accept
+ *
+ * Public route — no auth required. Owner clicks "Claim Agent" on the frontend,
+ * which calls this. The token IS the auth.
+ */
+router.post('/claim/:token/accept', async (req: Request, res: Response) => {
+  const { token } = req.params;
+
+  if (!token || typeof token !== 'string' || token.length !== 64) {
+    return res.status(400).json({ error: 'invalid_token', message: 'Invalid claim token' });
+  }
+
+  try {
+    const result = await AgentIdentityService.acceptOwnershipClaim(token);
+    return res.json({
+      message: 'Agent claimed successfully. It can now send and receive emails.',
+      agentName: result.agentName,
+      agentEmail: result.agentEmail,
+    });
+  } catch (err: any) {
+    if (err.code === 'INVALID_CLAIM_TOKEN') {
+      return res.status(404).json({ error: 'not_found', message: 'This claim link has expired or is invalid.' });
+    }
+    if (err.code === 'CLAIM_EXPIRED') {
+      return res.status(410).json({ error: 'expired', message: 'This claim link has expired.' });
+    }
+    logger.error('Accept claim error', { err });
+    return res.status(500).json({ error: 'Failed to accept claim' });
   }
 });
 

@@ -1,8 +1,11 @@
 import { verify as cryptoVerify, createPublicKey, randomBytes } from 'crypto';
+import { SendEmailCommand } from '@aws-sdk/client-sesv2';
 import { AgentIdentityStore } from '../stores/agentIdentityStore';
 import { AgentSignupStore } from '../stores/agentSignupStore';
+import { AgentClaimStore } from '../stores/agentClaimStore';
 import { OrganizationService } from './organizationService';
 import { UserService } from './userService';
+import sesClient from './sesClient';
 import domainStore from '../stores/domainStore';
 import logger from '../utils/logger';
 import type { ChallengeParams } from '../types/auth';
@@ -15,6 +18,10 @@ const TIMESTAMP_TOLERANCE_MS = 60_000; // ±60 seconds
 // Default Commune shared domain — agents get orgSlug@commune.email automatically
 const DEFAULT_DOMAIN_ID = process.env.DEFAULT_DOMAIN_ID || '';
 const DEFAULT_DOMAIN_NAME = process.env.DEFAULT_DOMAIN_NAME || 'commune.email';
+
+const EMAIL_FROM = process.env.AUTH_EMAIL_FROM || process.env.DEFAULT_FROM_EMAIL || 'no-reply@commune.email';
+const FRONTEND_URL = process.env.FRONTEND_URL || process.env.FRONTEND_BASE_URL || 'http://localhost:3000';
+const CONFIG_SET = 'commune-sending';
 
 // --- Crypto helpers ---
 
@@ -290,7 +297,13 @@ export class AgentIdentityService {
     agentSignupToken: string;
     challengeResponse: string; // the agent-constructed "verb:count:epochMarker" string
     signature: string;          // base64 Ed25519 signature of challengeResponse
-  }): Promise<{ agentId: string; orgId: string; inboxEmail: string }> {
+  }): Promise<{
+    agentId: string;
+    orgId: string;
+    inboxEmail: string;
+    ownershipStatus: 'unclaimed';
+    nextStep: { action: string; endpoint: string; body: { ownerEmail: string }; description: string };
+  }> {
     const { agentSignupToken, challengeResponse, signature } = data;
 
     const signup = await AgentSignupStore.findByToken(agentSignupToken);
@@ -376,7 +389,146 @@ export class AgentIdentityService {
       agentPurpose: agentPurpose.slice(0, 80),
     });
 
-    return { agentId: identity.id, orgId, inboxEmail };
+    return {
+      agentId: identity.id,
+      orgId,
+      inboxEmail,
+      ownershipStatus: 'unclaimed',
+      nextStep: {
+        action: 'claim_ownership',
+        endpoint: 'POST /v1/agent/claim-ownership',
+        body: { ownerEmail: '<your_owner_email>' },
+        description: 'Link this agent to a human owner. Required before you can send emails or create additional inboxes.',
+      },
+    };
+  }
+
+  /**
+   * Step 3: Agent initiates ownership claim by providing owner's email.
+   * Sends a claim link to the owner. Owner clicks to accept.
+   */
+  static async initiateOwnershipClaim(data: {
+    agentId: string;
+    ownerEmail: string;
+  }): Promise<{ status: string; ownerEmail: string; expiresIn: number }> {
+    const { agentId, ownerEmail } = data;
+
+    const identity = await AgentIdentityStore.findById(agentId);
+    if (!identity) {
+      throw Object.assign(new Error('Agent not found'), { code: 'AGENT_NOT_FOUND' });
+    }
+
+    if (identity.ownershipStatus === 'claimed') {
+      throw Object.assign(new Error('Agent is already claimed'), { code: 'ALREADY_CLAIMED' });
+    }
+
+    // Check for existing pending claim — allow re-send after 5 minutes
+    const existing = await AgentClaimStore.findPendingByAgentId(agentId);
+    if (existing) {
+      const createdAt = new Date(existing.createdAt).getTime();
+      const cooldownMs = 5 * 60 * 1000;
+      if (Date.now() - createdAt < cooldownMs) {
+        throw Object.assign(
+          new Error('A claim link was already sent. Please wait before requesting another.'),
+          { code: 'CLAIM_COOLDOWN' }
+        );
+      }
+    }
+
+    // Create claim token
+    const claimToken = await AgentClaimStore.create({
+      agentId,
+      orgId: identity.orgId,
+      ownerEmail,
+      agentName: identity.agentName,
+      agentPurpose: identity.agentPurpose,
+      inboxEmail: identity.inboxEmail || '',
+    });
+
+    // Update agent ownership status
+    await AgentIdentityStore.updateOwnership(agentId, {
+      ownerEmail,
+      ownershipStatus: 'pending',
+    });
+
+    // Send claim email to owner
+    const claimUrl = `${FRONTEND_URL.replace(/\/$/, '')}/claim/${claimToken.token}`;
+    await sendClaimEmail(ownerEmail, identity.agentName, identity.inboxEmail || '', identity.agentPurpose, claimUrl);
+
+    logger.info('Agent ownership claim initiated', {
+      agentId,
+      ownerEmail,
+      claimTokenId: claimToken.id,
+    });
+
+    return {
+      status: 'pending',
+      ownerEmail,
+      expiresIn: 86400,
+    };
+  }
+
+  /**
+   * Accept an ownership claim. Called when the owner clicks the claim link.
+   */
+  static async acceptOwnershipClaim(token: string): Promise<{
+    agentName: string;
+    agentEmail: string;
+    ownerEmail: string;
+  }> {
+    const claimToken = await AgentClaimStore.findByToken(token);
+    if (!claimToken) {
+      throw Object.assign(new Error('Invalid or expired claim link'), { code: 'INVALID_CLAIM_TOKEN' });
+    }
+
+    // Check expiry
+    if (new Date(claimToken.expiresAt) < new Date()) {
+      throw Object.assign(new Error('This claim link has expired'), { code: 'CLAIM_EXPIRED' });
+    }
+
+    // Mark token as accepted
+    await AgentClaimStore.markAccepted(claimToken.id);
+
+    // Mark agent as claimed
+    await AgentIdentityStore.updateOwnership(claimToken.agentId, {
+      ownerEmail: claimToken.ownerEmail,
+      ownershipStatus: 'claimed',
+      claimedAt: new Date().toISOString(),
+    });
+
+    logger.info('Agent ownership claimed', {
+      agentId: claimToken.agentId,
+      ownerEmail: claimToken.ownerEmail,
+    });
+
+    return {
+      agentName: claimToken.agentName,
+      agentEmail: claimToken.inboxEmail,
+      ownerEmail: claimToken.ownerEmail,
+    };
+  }
+
+  /**
+   * Get claim details for rendering the claim page.
+   */
+  static async getClaimDetails(token: string): Promise<{
+    agentName: string;
+    agentPurpose: string;
+    agentEmail: string;
+    ownerEmail: string;
+    createdAt: string;
+  } | null> {
+    const claimToken = await AgentClaimStore.findByToken(token);
+    if (!claimToken) return null;
+    if (new Date(claimToken.expiresAt) < new Date()) return null;
+
+    return {
+      agentName: claimToken.agentName,
+      agentPurpose: claimToken.agentPurpose,
+      agentEmail: claimToken.inboxEmail,
+      ownerEmail: claimToken.ownerEmail,
+      createdAt: claimToken.createdAt,
+    };
   }
 
   /**
@@ -424,5 +576,60 @@ export class AgentIdentityService {
     );
 
     return { orgId: identity.orgId, agentId };
+  }
+}
+
+// --- Claim email helper ---
+
+async function sendClaimEmail(
+  toEmail: string,
+  agentName: string,
+  agentEmail: string,
+  agentPurpose: string,
+  claimUrl: string
+): Promise<void> {
+  const subject = `Claim your agent on Commune`;
+  const html = `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:40px 20px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0a;color:#e5e5e5;">
+  <div style="max-width:480px;margin:0 auto;">
+    <div style="font-size:13px;color:rgba(255,255,255,0.3);margin-bottom:24px;">Commune</div>
+    <h1 style="font-size:20px;font-weight:600;margin:0 0 20px;color:#fff;">Claim your agent</h1>
+    <p style="font-size:14px;line-height:1.6;color:rgba(255,255,255,0.55);margin:0 0 24px;">
+      <strong style="color:#fff;">${agentName}</strong> has registered on Commune and is requesting you as its owner.
+    </p>
+    <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;margin-bottom:24px;">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.05em;color:rgba(255,255,255,0.25);margin-bottom:12px;">Agent details</div>
+      <div style="font-size:13px;color:rgba(255,255,255,0.65);margin-bottom:6px;"><strong style="color:rgba(255,255,255,0.35);font-weight:normal;">Name:</strong> ${agentName}</div>
+      <div style="font-size:13px;color:rgba(255,255,255,0.65);margin-bottom:6px;"><strong style="color:rgba(255,255,255,0.35);font-weight:normal;">Email:</strong> ${agentEmail}</div>
+      <div style="font-size:13px;color:rgba(255,255,255,0.65);"><strong style="color:rgba(255,255,255,0.35);font-weight:normal;">Purpose:</strong> ${agentPurpose.length > 120 ? agentPurpose.slice(0, 120) + '...' : agentPurpose}</div>
+    </div>
+    <a href="${claimUrl}" style="display:inline-block;background:#fff;color:#0a0a0a;font-size:14px;font-weight:600;padding:10px 28px;border-radius:8px;text-decoration:none;">Claim Agent</a>
+    <p style="font-size:12px;color:rgba(255,255,255,0.2);margin-top:24px;">This link expires in 24 hours. If you didn't expect this, ignore this email.</p>
+  </div>
+</body>
+</html>`;
+  const text = `Commune\n\nClaim your agent\n\n${agentName} has registered on Commune and is requesting you as its owner.\n\nAgent: ${agentName}\nEmail: ${agentEmail}\nPurpose: ${agentPurpose}\n\nClaim your agent: ${claimUrl}\n\nThis link expires in 24 hours.`;
+
+  try {
+    await sesClient.send(new SendEmailCommand({
+      FromEmailAddress: EMAIL_FROM,
+      Destination: { ToAddresses: [toEmail] },
+      Content: {
+        Simple: {
+          Subject: { Data: subject, Charset: 'UTF-8' },
+          Body: {
+            Html: { Data: html, Charset: 'UTF-8' },
+            Text: { Data: text, Charset: 'UTF-8' },
+          },
+        },
+      },
+      ConfigurationSetName: CONFIG_SET,
+    }));
+    logger.info('Claim email sent to owner', { toEmail, agentName });
+  } catch (err: any) {
+    logger.error('Failed to send claim email', { toEmail, error: err?.message });
+    throw Object.assign(new Error('Failed to send claim email'), { code: 'EMAIL_SEND_FAILED' });
   }
 }

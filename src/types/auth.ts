@@ -123,6 +123,8 @@ export interface ChallengeParams {
   expectedWordCount: number; // count of words in agentPurpose with 5+ alphabetical chars
 }
 
+export type AgentOwnershipStatus = 'unclaimed' | 'pending' | 'claimed';
+
 export interface AgentIdentity {
   id: string;           // "agt_<32hex>" — stored as COMMUNE_AGENT_ID by the agent
   agentName: string;
@@ -135,11 +137,30 @@ export interface AgentIdentity {
   createdAt: string;
   lastUsedAt?: string;
   revokedAt?: string;
+  // Ownership — links agent to a human owner
+  ownerEmail?: string;
+  ownershipStatus: AgentOwnershipStatus;
+  claimedAt?: string;
   // Optional profile fields — supplied at registration, passed to OAuth integrators via agentinfo
   avatarUrl?: string;      // URL to agent's profile image
   websiteUrl?: string;     // agent's website or project page
   moltbookHandle?: string; // Moltbook social handle — if present, moltbook_connected = true
   capabilities?: string[]; // what the agent can do, e.g. ["send_email", "parse_invoices"]
+}
+
+export interface AgentClaimToken {
+  id: string;
+  token: string;          // random 32-byte hex, unguessable
+  agentId: string;
+  orgId: string;
+  ownerEmail: string;
+  agentName: string;
+  agentPurpose: string;
+  inboxEmail: string;
+  status: 'pending' | 'accepted' | 'expired';
+  expiresAt: string;      // 24-hour TTL
+  createdAt: string;
+  acceptedAt?: string;
 }
 
 export interface AgentSignup {

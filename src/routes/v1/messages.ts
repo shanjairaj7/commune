@@ -12,6 +12,7 @@ import { sendingHealthGate } from '../../middleware/sendingHealthGate';
 import { warmupGate } from '../../middleware/warmupGate';
 import { enforceInboxDailyLimit } from '../../middleware/inboxLimits';
 import { enforceApiKeyEmailLimit } from '../../middleware/apiKeyLimits';
+import { requireClaimedAgent } from '../../middleware/requireClaimedAgent';
 import { getOutboundEmailQueue } from '../../workers/outboundEmailWorker';
 import { checkIdempotency, storeIdempotencyResult } from '../../lib/idempotency';
 
@@ -35,7 +36,7 @@ const router = Router();
  *   domainId   - Domain to send from (optional, inferred from inboxId)
  *   attachments - Array of attachment IDs from upload (optional)
  */
-router.post('/send', sendingHealthGate, warmupGate, emailRateLimiter, emailDailyRateLimiter, outboundBurstDetector, validateOutboundContent, requirePermission('messages:write'), validate(SendEmailSchema), enforceInboxDailyLimit, enforceApiKeyEmailLimit, async (req: any, res) => {
+router.post('/send', requireClaimedAgent, sendingHealthGate, warmupGate, emailRateLimiter, emailDailyRateLimiter, outboundBurstDetector, validateOutboundContent, requirePermission('messages:write'), validate(SendEmailSchema), enforceInboxDailyLimit, enforceApiKeyEmailLimit, async (req: any, res) => {
   const orgId: string | undefined = req.orgId;
   const payload = req.body;
 

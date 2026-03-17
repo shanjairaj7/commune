@@ -12,8 +12,11 @@
  */
 
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 import { ApiKeyService } from '../../services/apiKeyService';
+import { AgentIdentityService } from '../../services/agentIdentityService';
 import { OrganizationService } from '../../services/organizationService';
+import { requireClaimedAgent } from '../../middleware/requireClaimedAgent';
 import logger from '../../utils/logger';
 
 const router = Router();
@@ -59,6 +62,72 @@ router.patch('/org', async (req: any, res) => {
   }
 });
 
+// ─── Ownership claim ──────────────────────────────────────────────────────
+
+// 3 claim attempts per IP per 24 hours — prevents spamming random emails
+const claimRateLimit = rateLimit({
+  windowMs: 24 * 60 * 60 * 1000,
+  max: 3,
+  message: { error: 'Too many claim attempts. Try again tomorrow.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+/**
+ * POST /v1/agent/claim-ownership
+ * Agent initiates ownership claim by providing its owner's email.
+ * Sends a claim link to the owner. Owner clicks to accept.
+ *
+ * Body:
+ *   ownerEmail: string — the human owner's email address
+ */
+router.post('/claim-ownership', claimRateLimit, async (req: any, res) => {
+  const { ownerEmail } = req.body;
+
+  if (!ownerEmail || typeof ownerEmail !== 'string') {
+    return res.status(400).json({ error: 'missing_fields', message: 'ownerEmail is required' });
+  }
+
+  // Basic email format validation
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(ownerEmail.trim())) {
+    return res.status(400).json({ error: 'invalid_email', message: 'ownerEmail must be a valid email address' });
+  }
+
+  if (!req.agentId) {
+    return res.status(400).json({
+      error: 'agent_signing_required',
+      message: 'Ownership claim requires agent signature auth, not API key auth.',
+    });
+  }
+
+  try {
+    const result = await AgentIdentityService.initiateOwnershipClaim({
+      agentId: req.agentId,
+      ownerEmail: ownerEmail.trim().toLowerCase(),
+    });
+
+    return res.json({
+      status: result.status,
+      ownerEmail: result.ownerEmail,
+      message: `Claim link sent to ${result.ownerEmail}. Your owner needs to click the link to activate this agent. You can receive and read emails while waiting.`,
+      expiresIn: result.expiresIn,
+    });
+  } catch (err: any) {
+    if (err.code === 'ALREADY_CLAIMED') {
+      return res.status(409).json({ error: 'already_claimed', message: 'This agent is already claimed by an owner.' });
+    }
+    if (err.code === 'CLAIM_COOLDOWN') {
+      return res.status(429).json({ error: 'claim_cooldown', message: err.message });
+    }
+    if (err.code === 'EMAIL_SEND_FAILED') {
+      return res.status(502).json({ error: 'email_send_failed', message: 'Failed to send claim email. Please try again.' });
+    }
+    logger.error('Agent claim-ownership error', { err });
+    return res.status(500).json({ error: 'Failed to initiate ownership claim' });
+  }
+});
+
 // ─── API key management ────────────────────────────────────────────────────
 
 /**
@@ -98,7 +167,7 @@ router.get('/api-keys', async (req: any, res) => {
  *   permissions: string[] — optional, defaults to ['read', 'write']
  *   expiresIn:   number   — optional, seconds until expiry
  */
-router.post('/api-keys', async (req: any, res) => {
+router.post('/api-keys', requireClaimedAgent, async (req: any, res) => {
   const { name, permissions, expiresIn } = req.body;
 
   if (!name || typeof name !== 'string' || !name.trim()) {

@@ -1,7 +1,7 @@
 import { randomBytes } from 'crypto';
 import { getCollection } from '../db';
 import { getRedisClient } from '../lib/redis';
-import type { AgentIdentity, AgentSignatureNonce } from '../types/auth';
+import type { AgentIdentity, AgentOwnershipStatus, AgentSignatureNonce } from '../types/auth';
 
 const NONCE_TTL_MS = 2 * 60 * 1000; // 2 minutes — same as original MongoDB TTL
 
@@ -10,7 +10,7 @@ const AGENT_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const agentCache = new Map<string, { identity: AgentIdentity; expiresAt: number }>();
 
 export class AgentIdentityStore {
-  static async create(data: Omit<AgentIdentity, 'id' | 'createdAt' | 'status' | 'lastUsedAt' | 'revokedAt'>): Promise<AgentIdentity> {
+  static async create(data: Omit<AgentIdentity, 'id' | 'createdAt' | 'status' | 'lastUsedAt' | 'revokedAt' | 'ownershipStatus'>): Promise<AgentIdentity> {
     const collection = await getCollection<AgentIdentity>('agent_identities');
     if (!collection) throw new Error('Database not available');
 
@@ -18,6 +18,7 @@ export class AgentIdentityStore {
       id: 'agt_' + randomBytes(16).toString('hex'),
       ...data,
       status: 'active',
+      ownershipStatus: 'unclaimed',
       createdAt: new Date().toISOString(),
     };
 
@@ -35,7 +36,7 @@ export class AgentIdentityStore {
     if (!collection) return null;
     const identity = await collection.findOne(
       { id, status: 'active' },
-      { projection: { id: 1, publicKey: 1, orgId: 1, status: 1, agentEmail: 1, inboxEmail: 1, agentName: 1, agentPurpose: 1, createdAt: 1, lastUsedAt: 1, avatarUrl: 1, websiteUrl: 1, moltbookHandle: 1, capabilities: 1 } }
+      { projection: { id: 1, publicKey: 1, orgId: 1, status: 1, agentEmail: 1, inboxEmail: 1, agentName: 1, agentPurpose: 1, createdAt: 1, lastUsedAt: 1, avatarUrl: 1, websiteUrl: 1, moltbookHandle: 1, capabilities: 1, ownerEmail: 1, ownershipStatus: 1, claimedAt: 1 } }
     );
 
     if (identity) {
@@ -52,6 +53,23 @@ export class AgentIdentityStore {
     const collection = await getCollection<AgentIdentity>('agent_identities');
     if (!collection) return [];
     return collection.find({ orgId }).toArray();
+  }
+
+  static async updateOwnership(id: string, data: {
+    ownerEmail?: string;
+    ownershipStatus: AgentOwnershipStatus;
+    claimedAt?: string;
+  }): Promise<boolean> {
+    const collection = await getCollection<AgentIdentity>('agent_identities');
+    if (!collection) return false;
+    const result = await collection.updateOne(
+      { id, status: 'active' },
+      { $set: data }
+    );
+    if (result.modifiedCount > 0) {
+      AgentIdentityStore.invalidateAgentCache(id);
+    }
+    return result.modifiedCount > 0;
   }
 
   static async updateLastUsed(id: string): Promise<void> {

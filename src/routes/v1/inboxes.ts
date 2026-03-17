@@ -5,6 +5,7 @@ import { requirePermission } from '../../middleware/permissions';
 import { requireFeature, requireInboxQuota } from '../../middleware/planGate';
 import { inboxRateLimiter } from '../../lib/redisRateLimiter';
 import { enforceApiKeyInboxLimit } from '../../middleware/apiKeyLimits';
+import { requireClaimedAgent } from '../../middleware/requireClaimedAgent';
 import { OrganizationService } from '../../services/organizationService';
 import { DEFAULT_DOMAIN_ID, DEFAULT_DOMAIN_NAME } from '../../config/freeTierConfig';
 import logger from '../../utils/logger';
@@ -57,7 +58,7 @@ async function resolveDomain(orgId: string): Promise<{ domainId: string; domainN
  *
  * Body: { local_part: string, domain_id?: string, name?: string, webhook?: object }
  */
-router.post('/', json(), requireInboxQuota, inboxRateLimiter, enforceApiKeyInboxLimit, requirePermission('inboxes:write'), async (req: any, res) => {
+router.post('/', json(), requireClaimedAgent, requireInboxQuota, inboxRateLimiter, enforceApiKeyInboxLimit, requirePermission('inboxes:write'), async (req: any, res) => {
   const orgId = req.orgId;
   const { local_part, localPart, domain_id, domainId: bodyDomainId, name, display_name, displayName: bodyDisplayName, webhook, status } = req.body || {};
 
@@ -183,7 +184,7 @@ router.get('/:domainId/inboxes', requirePermission('inboxes:read'), async (req: 
  * Create a new inbox.
  * Body: { local_part: string, name?: string, webhook?: { endpoint: string, events?: string[] } }
  */
-router.post('/:domainId/inboxes', json(), requireInboxQuota, inboxRateLimiter, enforceApiKeyInboxLimit, requirePermission('inboxes:write'), async (req: any, res) => {
+router.post('/:domainId/inboxes', json(), requireClaimedAgent, requireInboxQuota, inboxRateLimiter, enforceApiKeyInboxLimit, requirePermission('inboxes:write'), async (req: any, res) => {
   const { domainId } = req.params;
   const orgId = req.orgId;
   const { local_part, localPart, name, display_name, displayName: bodyDisplayName, webhook, status } = req.body || {};
