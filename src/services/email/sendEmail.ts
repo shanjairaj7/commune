@@ -355,7 +355,11 @@ const sendEmail = async (payload: SendMessagePayload & { orgId?: string }) => {
               ...(payload.text && { Text: { Data: payload.text, Charset: 'UTF-8' } }),
               ...(payload.html && { Html: { Data: payload.html, Charset: 'UTF-8' } }),
             },
-            Headers: Object.entries(headers).map(([Name, Value]) => ({ Name, Value: String(Value) })),
+            // Message-ID is not allowed in Simple.Headers — SES sets it automatically.
+            // All other custom headers (In-Reply-To, References, List-Unsubscribe, etc.) are fine.
+            Headers: Object.entries(headers)
+              .filter(([Name]) => !['Message-ID', 'message-id', 'Message-Id'].includes(Name))
+              .map(([Name, Value]) => ({ Name, Value: String(Value) })),
           },
         },
         ConfigurationSetName: 'commune-sending',
