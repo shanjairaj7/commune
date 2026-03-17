@@ -445,15 +445,16 @@ export class AgentIdentityService {
       inboxEmail: identity.inboxEmail || '',
     });
 
-    // Update agent ownership status
+    // Send claim email BEFORE updating ownership status — if email fails,
+    // agent stays in current state and can retry
+    const claimUrl = `${FRONTEND_URL.replace(/\/$/, '')}/claim/${claimToken.token}`;
+    await sendClaimEmail(ownerEmail, identity.agentName, identity.inboxEmail || '', identity.agentPurpose, claimUrl);
+
+    // Email sent successfully — now update agent ownership status
     await AgentIdentityStore.updateOwnership(agentId, {
       ownerEmail,
       ownershipStatus: 'pending',
     });
-
-    // Send claim email to owner
-    const claimUrl = `${FRONTEND_URL.replace(/\/$/, '')}/claim/${claimToken.token}`;
-    await sendClaimEmail(ownerEmail, identity.agentName, identity.inboxEmail || '', identity.agentPurpose, claimUrl);
 
     logger.info('Agent ownership claim initiated', {
       agentId,
@@ -589,28 +590,21 @@ async function sendClaimEmail(
   claimUrl: string
 ): Promise<void> {
   const subject = `Claim your agent on Commune`;
-  const html = `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"></head>
-<body style="margin:0;padding:40px 20px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0a0a0a;color:#e5e5e5;">
-  <div style="max-width:480px;margin:0 auto;">
-    <div style="font-size:13px;color:rgba(255,255,255,0.3);margin-bottom:24px;">Commune</div>
-    <h1 style="font-size:20px;font-weight:600;margin:0 0 20px;color:#fff;">Claim your agent</h1>
-    <p style="font-size:14px;line-height:1.6;color:rgba(255,255,255,0.55);margin:0 0 24px;">
-      <strong style="color:#fff;">${agentName}</strong> has registered on Commune and is requesting you as its owner.
-    </p>
-    <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;margin-bottom:24px;">
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.05em;color:rgba(255,255,255,0.25);margin-bottom:12px;">Agent details</div>
-      <div style="font-size:13px;color:rgba(255,255,255,0.65);margin-bottom:6px;"><strong style="color:rgba(255,255,255,0.35);font-weight:normal;">Name:</strong> ${agentName}</div>
-      <div style="font-size:13px;color:rgba(255,255,255,0.65);margin-bottom:6px;"><strong style="color:rgba(255,255,255,0.35);font-weight:normal;">Email:</strong> ${agentEmail}</div>
-      <div style="font-size:13px;color:rgba(255,255,255,0.65);"><strong style="color:rgba(255,255,255,0.35);font-weight:normal;">Purpose:</strong> ${agentPurpose.length > 120 ? agentPurpose.slice(0, 120) + '...' : agentPurpose}</div>
-    </div>
-    <a href="${claimUrl}" style="display:inline-block;background:#fff;color:#0a0a0a;font-size:14px;font-weight:600;padding:10px 28px;border-radius:8px;text-decoration:none;">Claim Agent</a>
-    <p style="font-size:12px;color:rgba(255,255,255,0.2);margin-top:24px;">This link expires in 24 hours. If you didn't expect this, ignore this email.</p>
-  </div>
-</body>
-</html>`;
-  const text = `Commune\n\nClaim your agent\n\n${agentName} has registered on Commune and is requesting you as its owner.\n\nAgent: ${agentName}\nEmail: ${agentEmail}\nPurpose: ${agentPurpose}\n\nClaim your agent: ${claimUrl}\n\nThis link expires in 24 hours.`;
+
+  // Escape HTML special chars in user-provided text
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const safeName = esc(agentName);
+  const safeEmail = esc(agentEmail);
+  const safePurpose = esc(agentPurpose.length > 120 ? agentPurpose.slice(0, 120) + '...' : agentPurpose);
+
+  const html = `<div style="font-family:Arial,sans-serif;color:#333;line-height:1.5;">
+  <h2>Claim your agent</h2>
+  <p><strong>${safeName}</strong> has registered on Commune and is requesting you as its owner.</p>
+  <p>Agent: ${safeName}<br>Email: ${safeEmail}<br>Purpose: ${safePurpose}</p>
+  <p><a href="${claimUrl}" style="display:inline-block;background:#0a0a0a;color:#fff;padding:10px 24px;border-radius:6px;text-decoration:none;font-weight:600;">Claim Agent</a></p>
+  <p style="font-size:12px;color:#999;">This link expires in 24 hours. If you didn't expect this, ignore this email.</p>
+</div>`;
+  const text = `Claim your agent\n\n${agentName} has registered on Commune and is requesting you as its owner.\n\nAgent: ${agentName}\nEmail: ${agentEmail}\nPurpose: ${agentPurpose}\n\nClaim your agent: ${claimUrl}\n\nThis link expires in 24 hours.`;
 
   try {
     await sesClient.send(new SendEmailCommand({
@@ -629,7 +623,7 @@ async function sendClaimEmail(
     }));
     logger.info('Claim email sent to owner', { toEmail, agentName });
   } catch (err: any) {
-    logger.error('Failed to send claim email', { toEmail, error: err?.message });
+    logger.error('Failed to send claim email', { toEmail, error: err?.message, code: err?.Code, statusCode: err?.$metadata?.httpStatusCode });
     throw Object.assign(new Error('Failed to send claim email'), { code: 'EMAIL_SEND_FAILED' });
   }
 }
