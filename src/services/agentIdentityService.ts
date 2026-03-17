@@ -1,11 +1,10 @@
 import { verify as cryptoVerify, createPublicKey, randomBytes } from 'crypto';
-import { SendEmailCommand } from '@aws-sdk/client-sesv2';
 import { AgentIdentityStore } from '../stores/agentIdentityStore';
 import { AgentSignupStore } from '../stores/agentSignupStore';
 import { AgentClaimStore } from '../stores/agentClaimStore';
 import { OrganizationService } from './organizationService';
 import { UserService } from './userService';
-import sesClient from './sesClient';
+import emailService from './email';
 import domainStore from '../stores/domainStore';
 import logger from '../utils/logger';
 import type { ChallengeParams } from '../types/auth';
@@ -19,9 +18,7 @@ const TIMESTAMP_TOLERANCE_MS = 60_000; // ±60 seconds
 const DEFAULT_DOMAIN_ID = process.env.DEFAULT_DOMAIN_ID || '';
 const DEFAULT_DOMAIN_NAME = process.env.DEFAULT_DOMAIN_NAME || 'commune.email';
 
-const EMAIL_FROM = process.env.DEFAULT_FROM_EMAIL || 'noreply@commune.email';
 const FRONTEND_URL = process.env.FRONTEND_URL || process.env.FRONTEND_BASE_URL || 'http://localhost:3000';
-const CONFIG_SET = 'commune-sending';
 
 // --- Crypto helpers ---
 
@@ -448,7 +445,7 @@ export class AgentIdentityService {
     // Send claim email BEFORE updating ownership status — if email fails,
     // agent stays in current state and can retry
     const claimUrl = `${FRONTEND_URL.replace(/\/$/, '')}/claim/${claimToken.token}`;
-    await sendClaimEmail(ownerEmail, identity.agentName, identity.inboxEmail || '', identity.agentPurpose, claimUrl);
+    await sendClaimEmail(ownerEmail, identity.agentName, identity.inboxEmail || '', identity.agentPurpose, claimUrl, identity.orgId);
 
     // Email sent successfully — now update agent ownership status
     await AgentIdentityStore.updateOwnership(agentId, {
@@ -587,7 +584,8 @@ async function sendClaimEmail(
   agentName: string,
   agentEmail: string,
   agentPurpose: string,
-  claimUrl: string
+  claimUrl: string,
+  orgId: string,
 ): Promise<void> {
   const subject = `Claim your agent on Commune`;
 
@@ -606,25 +604,22 @@ async function sendClaimEmail(
 </div>`;
   const text = `Claim your agent\n\n${agentName} has registered on Commune and is requesting you as its owner.\n\nAgent: ${agentName}\nEmail: ${agentEmail}\nPurpose: ${agentPurpose}\n\nClaim your agent: ${claimUrl}\n\nThis link expires in 24 hours.`;
 
-  try {
-    await sesClient.send(new SendEmailCommand({
-      FromEmailAddress: EMAIL_FROM,
-      Destination: { ToAddresses: [toEmail] },
-      Content: {
-        Simple: {
-          Subject: { Data: subject, Charset: 'UTF-8' },
-          Body: {
-            Html: { Data: html, Charset: 'UTF-8' },
-            Text: { Data: text, Charset: 'UTF-8' },
-          },
-        },
-      },
-      ConfigurationSetName: CONFIG_SET,
-    }));
-    logger.info('Claim email sent to owner', { toEmail, agentName });
-  } catch (err: any) {
-    const detail = { toEmail, error: err?.message, name: err?.name, code: err?.Code, statusCode: err?.$metadata?.httpStatusCode, from: EMAIL_FROM };
-    logger.error('Failed to send claim email', detail);
-    throw Object.assign(new Error(`Failed to send claim email: ${err?.name}: ${err?.message}`), { code: 'EMAIL_SEND_FAILED', detail });
+  // Use the same outbound email service as the v1 send API — goes through the
+  // production SES path that's verified for sending to any external address.
+  const result = await emailService.sendEmail({
+    orgId,
+    channel: 'email',
+    from: agentEmail, // send from the agent's inbox (SES-verified domain)
+    to: toEmail,
+    subject,
+    html,
+    text,
+  });
+
+  if (result.error) {
+    logger.error('Failed to send claim email', { toEmail, error: result.error });
+    throw Object.assign(new Error(`Failed to send claim email: ${result.error.message}`), { code: 'EMAIL_SEND_FAILED' });
   }
+
+  logger.info('Claim email sent to owner', { toEmail, agentName });
 }
