@@ -623,7 +623,8 @@ async function sendClaimEmail(
     }));
     logger.info('Claim email sent to owner', { toEmail, agentName });
   } catch (err: any) {
-    logger.error('Failed to send claim email', { toEmail, error: err?.message, code: err?.Code, statusCode: err?.$metadata?.httpStatusCode });
-    throw Object.assign(new Error('Failed to send claim email'), { code: 'EMAIL_SEND_FAILED' });
+    const detail = { toEmail, error: err?.message, name: err?.name, code: err?.Code, statusCode: err?.$metadata?.httpStatusCode, from: EMAIL_FROM };
+    logger.error('Failed to send claim email', detail);
+    throw Object.assign(new Error(`Failed to send claim email: ${err?.name}: ${err?.message}`), { code: 'EMAIL_SEND_FAILED', detail });
   }
 }

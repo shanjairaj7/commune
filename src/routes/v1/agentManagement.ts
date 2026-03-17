@@ -121,7 +121,7 @@ router.post('/claim-ownership', claimRateLimit, async (req: any, res) => {
       return res.status(429).json({ error: 'claim_cooldown', message: err.message });
     }
     if (err.code === 'EMAIL_SEND_FAILED') {
-      return res.status(502).json({ error: 'email_send_failed', message: 'Failed to send claim email. Please try again.' });
+      return res.status(502).json({ error: 'email_send_failed', message: err.message, detail: err.detail });
     }
     logger.error('Agent claim-ownership error', { err });
     return res.status(500).json({ error: 'Failed to initiate ownership claim' });
