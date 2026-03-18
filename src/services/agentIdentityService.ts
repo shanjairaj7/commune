@@ -18,7 +18,7 @@ const TIMESTAMP_TOLERANCE_MS = 60_000; // ±60 seconds
 const DEFAULT_DOMAIN_ID = process.env.DEFAULT_DOMAIN_ID || '';
 const DEFAULT_DOMAIN_NAME = process.env.DEFAULT_DOMAIN_NAME || 'commune.email';
 
-const FRONTEND_URL = process.env.FRONTEND_URL || process.env.FRONTEND_BASE_URL || 'http://localhost:3000';
+const FRONTEND_URL = process.env.FRONTEND_URL || process.env.FRONTEND_BASE_URL || 'https://commune.email';
 
 // --- Crypto helpers ---
 
@@ -586,28 +586,112 @@ async function sendClaimEmail(
   agentPurpose: string,
   claimUrl: string,
 ): Promise<void> {
-  const subject = `Claim your agent on Commune`;
+  const subject = `Verify agent ownership — ${agentName}`;
 
   // Escape HTML special chars in user-provided text
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const safeName = esc(agentName);
   const safeEmail = esc(agentEmail);
   const safePurpose = esc(agentPurpose.length > 120 ? agentPurpose.slice(0, 120) + '...' : agentPurpose);
+  const initial = agentName.charAt(0).toUpperCase();
 
-  const html = `<div style="font-family:Arial,sans-serif;color:#333;line-height:1.5;">
-  <h2>Claim your agent</h2>
-  <p><strong>${safeName}</strong> has registered on Commune and is requesting you as its owner.</p>
-  <p>Agent: ${safeName}<br>Email: ${safeEmail}<br>Purpose: ${safePurpose}</p>
-  <p><a href="${claimUrl}" style="display:inline-block;background:#0a0a0a;color:#fff;padding:10px 24px;border-radius:6px;text-decoration:none;font-weight:600;">Claim Agent</a></p>
-  <p style="font-size:12px;color:#999;">This link expires in 24 hours. If you didn't expect this, ignore this email.</p>
-</div>`;
-  const text = `Claim your agent\n\n${agentName} has registered on Commune and is requesting you as its owner.\n\nAgent: ${agentName}\nEmail: ${agentEmail}\nPurpose: ${agentPurpose}\n\nClaim your agent: ${claimUrl}\n\nThis link expires in 24 hours.`;
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f5;padding:40px 20px;">
+    <tr><td align="center">
+      <table role="presentation" width="480" cellpadding="0" cellspacing="0" style="max-width:480px;width:100%;">
+
+        <!-- Logo -->
+        <tr><td align="center" style="padding-bottom:32px;">
+          <span style="font-size:20px;font-weight:500;color:#18181b;letter-spacing:-0.01em;">commune</span>
+        </td></tr>
+
+        <!-- Card -->
+        <tr><td style="background-color:#ffffff;border-radius:12px;border:1px solid #e4e4e7;overflow:hidden;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+
+            <!-- Header -->
+            <tr><td style="padding:32px 32px 0 32px;">
+              <p style="margin:0 0 4px 0;font-size:11px;font-family:'Courier New',monospace;text-transform:uppercase;letter-spacing:0.1em;color:#a1a1aa;">Agent ownership</p>
+              <h1 style="margin:0 0 8px 0;font-size:20px;font-weight:600;color:#18181b;line-height:1.3;">Verify ownership</h1>
+              <p style="margin:0;font-size:14px;color:#71717a;line-height:1.6;">An agent has registered on Commune and listed you as its owner.</p>
+            </td></tr>
+
+            <!-- Agent card -->
+            <tr><td style="padding:24px 32px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#fafafa;border:1px solid #e4e4e7;border-radius:10px;">
+                <!-- Agent identity -->
+                <tr><td style="padding:20px 20px 16px 20px;">
+                  <table role="presentation" cellpadding="0" cellspacing="0"><tr>
+                    <td style="vertical-align:top;padding-right:14px;">
+                      <div style="width:40px;height:40px;border-radius:8px;background:linear-gradient(135deg,#dcfce7,#f0fdf4);border:1px solid #bbf7d0;text-align:center;line-height:40px;font-size:16px;font-weight:600;color:#16a34a;">${initial}</div>
+                    </td>
+                    <td style="vertical-align:top;">
+                      <p style="margin:0;font-size:15px;font-weight:600;color:#18181b;">${safeName}</p>
+                      <p style="margin:2px 0 0 0;font-size:12px;font-family:'Courier New',monospace;color:#a1a1aa;">${safeEmail}</p>
+                    </td>
+                  </tr></table>
+                </td></tr>
+
+                <!-- Divider -->
+                <tr><td style="padding:0 20px;"><hr style="margin:0;border:none;border-top:1px solid #e4e4e7;"></td></tr>
+
+                <!-- Purpose -->
+                <tr><td style="padding:16px 20px 20px 20px;">
+                  <p style="margin:0 0 4px 0;font-size:10px;font-family:'Courier New',monospace;text-transform:uppercase;letter-spacing:0.08em;color:#a1a1aa;">Purpose</p>
+                  <p style="margin:0;font-size:13px;color:#52525b;line-height:1.5;">${safePurpose}</p>
+                </td></tr>
+              </table>
+            </td></tr>
+
+            <!-- CTA -->
+            <tr><td style="padding:0 32px 12px 32px;" align="center">
+              <a href="${claimUrl}" style="display:inline-block;width:100%;text-align:center;background-color:#18181b;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;padding:12px 0;border-radius:8px;box-sizing:border-box;">Yes, this is my agent</a>
+            </td></tr>
+
+            <!-- Disclaimer -->
+            <tr><td style="padding:0 32px 32px 32px;" align="center">
+              <p style="margin:0;font-size:11px;color:#a1a1aa;line-height:1.5;">By confirming, you take responsibility for this agent's activity on Commune.</p>
+            </td></tr>
+
+          </table>
+        </td></tr>
+
+        <!-- Footer -->
+        <tr><td align="center" style="padding-top:24px;">
+          <p style="margin:0;font-size:11px;color:#a1a1aa;line-height:1.5;">This link expires in 24 hours. If you didn't request this, ignore this email.</p>
+          <p style="margin:8px 0 0 0;font-size:11px;color:#d4d4d8;">Commune &middot; commune.email</p>
+        </td></tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  const text = `VERIFY AGENT OWNERSHIP
+
+An agent has registered on Commune and listed you as its owner.
+
+Agent: ${agentName}
+Email: ${agentEmail}
+Purpose: ${agentPurpose}
+
+Verify ownership: ${claimUrl}
+
+By confirming, you take responsibility for this agent's activity on Commune.
+
+This link expires in 24 hours. If you didn't request this, ignore this email.
+
+Commune - commune.email`;
 
   const fromEmail = process.env.DEFAULT_FROM_EMAIL || 'noreply@commune.email';
 
   try {
     await resend.emails.send({
-      from: fromEmail,
+      from: `Commune <${fromEmail}>`,
       to: toEmail,
       subject,
       html,

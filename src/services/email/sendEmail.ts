@@ -215,12 +215,13 @@ const sendEmail = async (payload: SendMessagePayload & { orgId?: string }) => {
       payload.orgId
     );
     if (latest && latest.metadata) {
-      // RFC 5322: In-Reply-To must reference the Message-ID that the recipient
-      // actually received — which is the Resend-format ID, not our custom one.
-      // For old messages, fall back to whatever message_id we stored.
-      const replyToMsgId = latest.metadata.resend_id
-        ? `<${latest.metadata.resend_id}@resend.dev>`
-        : latest.metadata.message_id;
+      // RFC 5322: In-Reply-To must reference the Message-ID header that was
+      // actually delivered to the recipient. We set a custom Message-ID
+      // (<uuid@domain>) on every outbound email, so In-Reply-To must use that
+      // — NOT the Resend API ID (<resend_id@resend.dev>) which is never seen
+      // by the recipient's mail client.
+      const replyToMsgId = latest.metadata.custom_message_id
+        || latest.metadata.message_id;
       if (replyToMsgId) {
         // Build References chain from existing references + latest message_id
         const existingRefs = latest.metadata.references || [];
@@ -231,9 +232,12 @@ const sendEmail = async (payload: SendMessagePayload & { orgId?: string }) => {
           References: refsChain.join(' '),
         };
       }
-    }
-    if (subject && !subject.startsWith('Re:')) {
-      subject = `Re: ${subject}`;
+      // Only prepend "Re:" when replying to an existing message in the thread.
+      // The route handler always sets thread_id (generates one for new threads),
+      // so we must not prepend "Re:" for the first message.
+      if (subject && !subject.startsWith('Re:')) {
+        subject = `Re: ${subject}`;
+      }
     }
   }
 
