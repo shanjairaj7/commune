@@ -4,7 +4,7 @@ import { AgentSignupStore } from '../stores/agentSignupStore';
 import { AgentClaimStore } from '../stores/agentClaimStore';
 import { OrganizationService } from './organizationService';
 import { UserService } from './userService';
-import emailService from './email';
+import resend from './resendClient';
 import domainStore from '../stores/domainStore';
 import logger from '../utils/logger';
 import type { ChallengeParams } from '../types/auth';
@@ -445,7 +445,7 @@ export class AgentIdentityService {
     // Send claim email BEFORE updating ownership status — if email fails,
     // agent stays in current state and can retry
     const claimUrl = `${FRONTEND_URL.replace(/\/$/, '')}/claim/${claimToken.token}`;
-    await sendClaimEmail(ownerEmail, identity.agentName, identity.inboxEmail || '', identity.agentPurpose, claimUrl, identity.orgId);
+    await sendClaimEmail(ownerEmail, identity.agentName, identity.inboxEmail || '', identity.agentPurpose, claimUrl);
 
     // Email sent successfully — now update agent ownership status
     await AgentIdentityStore.updateOwnership(agentId, {
@@ -585,7 +585,6 @@ async function sendClaimEmail(
   agentEmail: string,
   agentPurpose: string,
   claimUrl: string,
-  orgId: string,
 ): Promise<void> {
   const subject = `Claim your agent on Commune`;
 
@@ -604,22 +603,19 @@ async function sendClaimEmail(
 </div>`;
   const text = `Claim your agent\n\n${agentName} has registered on Commune and is requesting you as its owner.\n\nAgent: ${agentName}\nEmail: ${agentEmail}\nPurpose: ${agentPurpose}\n\nClaim your agent: ${claimUrl}\n\nThis link expires in 24 hours.`;
 
-  // Use the same outbound email service as the v1 send API — goes through the
-  // production SES path that's verified for sending to any external address.
-  const result = await emailService.sendEmail({
-    orgId,
-    channel: 'email',
-    from: agentEmail, // send from the agent's inbox (SES-verified domain)
-    to: toEmail,
-    subject,
-    html,
-    text,
-  });
+  const fromEmail = process.env.DEFAULT_FROM_EMAIL || 'noreply@commune.email';
 
-  if (result.error) {
-    logger.error('Failed to send claim email', { toEmail, error: result.error });
-    throw Object.assign(new Error(`Failed to send claim email: ${result.error.message}`), { code: 'EMAIL_SEND_FAILED' });
+  try {
+    await resend.emails.send({
+      from: fromEmail,
+      to: toEmail,
+      subject,
+      html,
+      text,
+    });
+    logger.info('Claim email sent to owner', { toEmail, agentName });
+  } catch (err: any) {
+    logger.error('Failed to send claim email', { toEmail, error: err?.message });
+    throw Object.assign(new Error(`Failed to send claim email: ${err?.message}`), { code: 'EMAIL_SEND_FAILED' });
   }
-
-  logger.info('Claim email sent to owner', { toEmail, agentName });
 }

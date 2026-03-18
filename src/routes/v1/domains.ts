@@ -81,7 +81,7 @@ router.post('/', json(), requireDomainQuota, domainRateLimiter, requirePermissio
     }
 
     logger.info('v1: Domain created', { orgId, name });
-    return res.status(201).json({ data: sanitizeDomain(entry) || data });
+    return res.status(201).json({ data: sanitizeDomain(entry ?? null) || data });
   } catch (err) {
     logger.error('v1: Domain creation failed', { orgId, error: err });
     return res.status(500).json({ error: 'Failed to create domain' });

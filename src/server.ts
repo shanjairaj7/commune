@@ -18,6 +18,7 @@ import graphRoutes from './routes/dashboard/graph';
 import phoneSettingsRoutes from './routes/dashboard/phoneSettings';
 import phoneNumberRoutes from './routes/v1/phoneNumbers';
 import smsRoutes from './routes/v1/sms';
+import webhookRoutes from './routes/webhooks';
 import stripeWebhookRoutes from './routes/webhooks/stripe';
 import twilioWebhookRoutes from './routes/webhooks/twilio';
 import sesWebhookRoutes from './routes/webhooks/ses';
@@ -109,6 +110,7 @@ app.use(statusRoutes);
 app.use('/unsubscribe', unsubscribeRoutes);
 
 // Webhook routes mounted BEFORE JSON parser to preserve raw body for signature verification
+app.use('/api/webhooks/resend', webhookRoutes);
 app.use('/api/webhooks/ses', sesWebhookRoutes);
 app.use('/api/webhooks', express.raw({ type: 'application/json' }), stripeWebhookRoutes);
 
