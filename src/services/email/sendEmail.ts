@@ -217,23 +217,14 @@ const sendEmail = async (payload: SendMessagePayload & { orgId?: string }) => {
       payload.orgId
     );
     if (latest && latest.metadata) {
-      // RFC 5322: In-Reply-To must reference the Message-ID that the recipient
-      // actually received. Resend delivers emails with Message-ID in the format
-      // <resend-api-id@resend.dev>. We no longer set a custom Message-ID header,
-      // so the Resend ID IS the delivered Message-ID.
-      const replyToMsgId = latest.metadata.resend_id
-        ? `<${latest.metadata.resend_id}@resend.dev>`
-        : latest.metadata.message_id;
-      if (replyToMsgId) {
-        // Build References chain from existing references + latest message_id
-        const existingRefs = latest.metadata.references || [];
-        const refsChain = [...existingRefs, replyToMsgId].filter(Boolean);
-        headers = {
-          ...headers,
-          'In-Reply-To': replyToMsgId,
-          References: refsChain.join(' '),
-        };
-      }
+      // Do NOT set In-Reply-To or References headers. Resend's actual
+      // delivered Message-ID format is unknown (not <id@resend.dev> as
+      // previously assumed), so any In-Reply-To we construct will be
+      // invalid. An invalid In-Reply-To actively *prevents* Gmail from
+      // using subject-based threading — worse than no header at all.
+      // Gmail reliably threads by subject + participants when no
+      // In-Reply-To is present, which is what we want.
+
       // Only prepend "Re:" when replying to an existing message in the thread.
       // The route handler always sets thread_id (generates one for new threads),
       // so we must not prepend "Re:" for the first message.
