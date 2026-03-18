@@ -968,10 +968,9 @@ const searchThreads = async ({
  * Matches by commune_message_id (the pre-generated msg_xxx ID).
  */
 const updateSesMessageId = async (communeMessageId: string, sesMessageId: string): Promise<boolean> => {
-  const db = await getDb();
-  const messages = db.collection('messages');
+  const messages = await getCollection<UnifiedMessage>('messages');
+  if (!messages) return false;
 
-  // Also build the ses_references chain: previous ses_references + this message's ses_message_id
   const result = await messages.updateOne(
     { 'metadata.commune_message_id': communeMessageId, direction: 'outbound' },
     {

@@ -94,10 +94,10 @@ const handleInboundWebhook = async ({
     // Self-BCC detection: if this email has our X-Commune-Outbound-Id header,
     // it's a BCC copy of an outbound email. Extract the real SES Message-ID
     // and update the original outbound message — then skip normal inbound processing.
-    const emailHeaders = (email as any).headers || {};
+    const rawHeaders = (email as any).headers || {};
     const communeOutboundId =
-      emailHeaders['x-commune-outbound-id'] ||
-      emailHeaders['X-Commune-Outbound-Id'];
+      rawHeaders['x-commune-outbound-id'] ||
+      rawHeaders['X-Commune-Outbound-Id'];
     if (communeOutboundId) {
       const sesMessageId = (email as any).message_id as string;
       if (sesMessageId) {
