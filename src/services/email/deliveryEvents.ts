@@ -94,7 +94,8 @@ const handleDeliveryEvent = async (event: any, domainId?: string) => {
         inbox_id: inboxId,
         domain_id: domainId
       });
-      logger.debug('Sent event recorded', { messageId });
+      // TEMP: log full webhook payload to discover SES Message-ID field
+      logger.info('WEBHOOK_PAYLOAD_SENT', { messageId, fullPayload: JSON.stringify(data) });
       break;
     case 'email.delivered':
       await handleEmailDelivered(eventCreatedAt, data, message, domainId, inboxId);
