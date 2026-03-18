@@ -188,10 +188,13 @@ const sendEmail = async (payload: SendMessagePayload & { orgId?: string }) => {
   let subject = payload.subject || '';
 
   // Do NOT set a custom Message-ID header. Resend assigns its own Message-ID
-  // in the format <resend-api-id@resend.dev>, and setting a custom one causes
-  // a mismatch: the delivered email has our custom ID, but In-Reply-To on
-  // follow-ups references the Resend ID — breaking Gmail threading.
-  // Let Resend handle Message-ID so In-Reply-To (<resend_id@resend.dev>) matches.
+  // and setting a custom one causes threading mismatches.
+
+  // Gmail threading: set X-Entity-Ref-ID to the thread ID so all messages
+  // in the same Commune thread are grouped into one Gmail conversation.
+  // Gmail uses this header as a threading signal — same value = same thread.
+  const effectiveThreadId = payload.thread_id || generatedThreadId;
+  headers = { ...headers, 'X-Entity-Ref-ID': effectiveThreadId };
 
   // Always stamp Reply-To with an opaque routing token so inbound replies
   // can be mapped back to the correct thread — even if providers rewrite
