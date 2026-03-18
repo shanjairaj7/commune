@@ -91,6 +91,27 @@ const handleInboundWebhook = async ({
       return { error: attachmentError };
     }
 
+    // Self-BCC detection: if this email has our X-Commune-Outbound-Id header,
+    // it's a BCC copy of an outbound email. Extract the real SES Message-ID
+    // and update the original outbound message — then skip normal inbound processing.
+    const emailHeaders = (email as any).headers || {};
+    const communeOutboundId =
+      emailHeaders['x-commune-outbound-id'] ||
+      emailHeaders['X-Commune-Outbound-Id'];
+    if (communeOutboundId) {
+      const sesMessageId = (email as any).message_id as string;
+      if (sesMessageId) {
+        // Update the outbound message with the real SES Message-ID
+        const updated = await messageStore.updateSesMessageId(communeOutboundId, sesMessageId);
+        logger.info('Self-BCC: captured SES Message-ID', {
+          communeOutboundId,
+          sesMessageId,
+          updated,
+        });
+      }
+      return { data: { selfBcc: true, communeOutboundId } };
+    }
+
     // Resolve recipient, domain, and inbox first
     const toList = Array.isArray((email as any).to) ? (email as any).to : [];
     const parsedRecipients = toList.map(normalizeRecipient).filter(Boolean) as Array<

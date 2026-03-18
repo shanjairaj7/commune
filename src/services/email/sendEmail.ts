@@ -187,12 +187,10 @@ const sendEmail = async (payload: SendMessagePayload & { orgId?: string }) => {
   let headers = payload.headers ? sanitizeCustomHeaders(payload.headers) : {};
   let subject = payload.subject || '';
 
-  // Do NOT set a custom Message-ID header. Resend assigns its own Message-ID
-  // and setting a custom one causes threading mismatches.
-
-  // Do NOT set X-Entity-Ref-ID. Despite seeming like a threading signal,
-  // Gmail treats any email with this header as a standalone message and
-  // disables subject-based threading entirely.
+  // Tag outbound emails so the self-BCC copy can be identified on inbound.
+  // Uses the pre-generated commune_message_id which is available before send.
+  const communeMessageId = payload._messageId || `msg_${crypto.randomUUID().replace(/-/g, '')}`;
+  headers = { ...headers, 'X-Commune-Outbound-Id': communeMessageId };
 
   // Always stamp Reply-To with an opaque routing token so inbound replies
   // can be mapped back to the correct thread — even if providers rewrite
@@ -215,17 +213,20 @@ const sendEmail = async (payload: SendMessagePayload & { orgId?: string }) => {
       payload.orgId
     );
     if (latest && latest.metadata) {
-      // Do NOT set In-Reply-To or References headers. Resend's actual
-      // delivered Message-ID format is unknown (not <id@resend.dev> as
-      // previously assumed), so any In-Reply-To we construct will be
-      // invalid. An invalid In-Reply-To actively *prevents* Gmail from
-      // using subject-based threading — worse than no header at all.
-      // Gmail reliably threads by subject + participants when no
-      // In-Reply-To is present, which is what we want.
-
-      // Only prepend "Re:" when replying to an existing message in the thread.
-      // The route handler always sets thread_id (generates one for new threads),
-      // so we must not prepend "Re:" for the first message.
+      // Use the real SES Message-ID (captured via self-BCC) for In-Reply-To.
+      // This is the actual SMTP Message-ID that recipients see, enabling
+      // proper RFC 5322 threading across Gmail, Outlook, Apple Mail, etc.
+      const sesMessageId = latest.metadata.ses_message_id;
+      if (sesMessageId) {
+        const existingRefs = latest.metadata.ses_references || [];
+        const refsChain = [...existingRefs, sesMessageId].filter(Boolean);
+        headers = {
+          ...headers,
+          'In-Reply-To': sesMessageId,
+          References: refsChain.join(' '),
+        };
+      }
+      // Prepend "Re:" when replying to an existing message in the thread.
       if (subject && !subject.startsWith('Re:')) {
         subject = `Re: ${subject}`;
       }
@@ -275,6 +276,15 @@ const sendEmail = async (payload: SendMessagePayload & { orgId?: string }) => {
     }
   }
 
+  // Self-BCC: send a blind copy to the sender's own address so the inbound
+  // webhook can capture the real SES Message-ID (which Resend doesn't expose).
+  // This enables proper RFC 5322 threading via In-Reply-To/References.
+  const senderEmail = extractEmailAddress(fromAddress) || fromAddress;
+  const existingBcc = payload.bcc
+    ? (Array.isArray(payload.bcc) ? payload.bcc : [payload.bcc])
+    : [];
+  const bccWithSelf = [...existingBcc, senderEmail];
+
   const emailPayload = {
     from: fromAddress,
     to: validRecipients.length === recipients.length ? payload.to : validRecipients,
@@ -282,7 +292,7 @@ const sendEmail = async (payload: SendMessagePayload & { orgId?: string }) => {
     html: payload.html,
     text: payload.text,
     cc: payload.cc,
-    bcc: payload.bcc,
+    bcc: bccWithSelf,
     headers,
     attachments: resendAttachments.length > 0 ? resendAttachments : undefined,
     reply_to: replyToAddress,
@@ -339,9 +349,13 @@ const sendEmail = async (payload: SendMessagePayload & { orgId?: string }) => {
       message_id: resendMessageId,
       custom_message_id: outboundMessageId,
       resend_id: resendId,
-      commune_message_id: payload._messageId || null,
+      commune_message_id: communeMessageId,
       in_reply_to: headers['In-Reply-To'] || null,
       references: headers.References ? String(headers.References).split(' ') : [],
+      // ses_references: the References chain using real SES Message-IDs.
+      // Populated from the In-Reply-To/References we set (which use ses_message_id).
+      // The self-BCC will later add ses_message_id for THIS message.
+      ses_references: headers.References ? String(headers.References).split(' ') : [],
       domain_id: payload.domainId || null,
       inbox_id: payload.inboxId || null,
       attachment_ids: payload.attachments || [],

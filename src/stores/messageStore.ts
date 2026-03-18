@@ -19,6 +19,7 @@ const ensureIndexes = async () => {
     await messages.createIndex({ 'metadata.resend_id': 1 });  // For thread resolution by Resend API ID
     await messages.createIndex({ 'metadata.ses_message_id': 1 }); // For SES delivery event lookup
     await messages.createIndex({ 'metadata.routing_token': 1 }); // For routing token DB fallback
+    await messages.createIndex({ 'metadata.commune_message_id': 1 }); // For self-BCC SES Message-ID capture
     // Index for listThreads grouping/sorting on the pre-computed effective_thread_id field
     await messages.createIndex({ orgId: 1, effective_thread_id: 1, created_at: -1 });
     // Index for searchThreads $regex on plaintext search_summary
@@ -962,6 +963,28 @@ const searchThreads = async ({
   return results;
 };
 
+/**
+ * Update an outbound message with the real SES Message-ID captured via self-BCC.
+ * Matches by commune_message_id (the pre-generated msg_xxx ID).
+ */
+const updateSesMessageId = async (communeMessageId: string, sesMessageId: string): Promise<boolean> => {
+  const db = await getDb();
+  const messages = db.collection('messages');
+
+  // Also build the ses_references chain: previous ses_references + this message's ses_message_id
+  const result = await messages.updateOne(
+    { 'metadata.commune_message_id': communeMessageId, direction: 'outbound' },
+    {
+      $set: {
+        'metadata.ses_message_id': sesMessageId,
+        updated_at: new Date().toISOString(),
+      },
+    },
+  );
+
+  return result.modifiedCount > 0;
+};
+
 export default {
   ensureIndexes,
   insertMessage,
@@ -983,4 +1006,5 @@ export default {
   updateMessage,
   resolveThreadBySmtpIds,
   resolveThreadByRoutingToken,
+  updateSesMessageId,
 };
