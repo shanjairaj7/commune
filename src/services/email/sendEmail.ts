@@ -187,12 +187,11 @@ const sendEmail = async (payload: SendMessagePayload & { orgId?: string }) => {
   let headers = payload.headers ? sanitizeCustomHeaders(payload.headers) : {};
   let subject = payload.subject || '';
 
-  // Ensure a stable Message-ID for this outbound email so replies can thread correctly.
-  if (!headers['Message-ID'] && !headers['message-id'] && !headers['Message-Id']) {
-    headers = { ...headers, 'Message-ID': outboundMessageId };
-  } else {
-    headers = { ...headers, 'Message-ID': outboundMessageId };
-  }
+  // Do NOT set a custom Message-ID header. Resend assigns its own Message-ID
+  // in the format <resend-api-id@resend.dev>, and setting a custom one causes
+  // a mismatch: the delivered email has our custom ID, but In-Reply-To on
+  // follow-ups references the Resend ID — breaking Gmail threading.
+  // Let Resend handle Message-ID so In-Reply-To (<resend_id@resend.dev>) matches.
 
   // Always stamp Reply-To with an opaque routing token so inbound replies
   // can be mapped back to the correct thread — even if providers rewrite
@@ -215,13 +214,13 @@ const sendEmail = async (payload: SendMessagePayload & { orgId?: string }) => {
       payload.orgId
     );
     if (latest && latest.metadata) {
-      // RFC 5322: In-Reply-To must reference the Message-ID header that was
-      // actually delivered to the recipient. We set a custom Message-ID
-      // (<uuid@domain>) on every outbound email, so In-Reply-To must use that
-      // — NOT the Resend API ID (<resend_id@resend.dev>) which is never seen
-      // by the recipient's mail client.
-      const replyToMsgId = latest.metadata.custom_message_id
-        || latest.metadata.message_id;
+      // RFC 5322: In-Reply-To must reference the Message-ID that the recipient
+      // actually received. Resend delivers emails with Message-ID in the format
+      // <resend-api-id@resend.dev>. We no longer set a custom Message-ID header,
+      // so the Resend ID IS the delivered Message-ID.
+      const replyToMsgId = latest.metadata.resend_id
+        ? `<${latest.metadata.resend_id}@resend.dev>`
+        : latest.metadata.message_id;
       if (replyToMsgId) {
         // Build References chain from existing references + latest message_id
         const existingRefs = latest.metadata.references || [];
