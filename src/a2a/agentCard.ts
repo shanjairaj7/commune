@@ -1,6 +1,6 @@
 import type { AgentCard } from '@a2a-js/sdk';
 
-const BASE_URL = process.env.BASE_URL || 'https://web-production-3f46f.up.railway.app';
+const BASE_URL = process.env.BASE_URL || 'https://api.commune.email';
 
 /**
  * Commune's A2A Agent Card.
