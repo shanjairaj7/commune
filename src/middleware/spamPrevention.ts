@@ -18,6 +18,19 @@ export const validateOutboundContent = async (
     const { text, html, to } = req.body;
     const content = html || text || '';
 
+    // Warn if content exceeds Gmail's 102KB clipping threshold.
+    // Gmail hides everything after 102KB behind "View entire message",
+    // breaking CTAs, unsubscribe links, and email rendering.
+    const contentBytes = Buffer.byteLength(content, 'utf8');
+    if (contentBytes > 102_400) {
+      res.setHeader('X-Content-Warning', 'gmail-clip');
+      res.setHeader('X-Content-Size', contentBytes.toString());
+      logger.warn('Email content exceeds Gmail 102KB clip threshold', {
+        orgId: req.orgId || req.user?.orgId || req.apiKey?.orgId,
+        sizeBytes: contentBytes,
+      });
+    }
+
     // Skip validation for very short content
     if (content.length < 20) {
       return next();

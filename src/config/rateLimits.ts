@@ -80,7 +80,7 @@ export const RATE_LIMITS: Record<TierType, TierLimits> = {
       promptInjection: true,
       encryptionAtRest: true,
       manualLimits: true,
-      domainWarmup: false,
+      domainWarmup: true,
       auditLogging: false,
       sso: false,
       networkGraph: false,

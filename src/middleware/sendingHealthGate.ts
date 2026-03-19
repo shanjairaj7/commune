@@ -40,6 +40,11 @@ export const sendingHealthGate = async (req: OrgRequest, res: Response, next: Ne
       });
     }
 
+    // Signal throttled state so downstream middleware/workers can reduce concurrency
+    if (health.status === 'throttled') {
+      res.setHeader('X-Sending-Throttled', 'true');
+    }
+
     // Add warnings to response headers if approaching thresholds
     if (health.warnings.length > 0) {
       res.setHeader('X-Sending-Warnings', health.warnings.join('; '));

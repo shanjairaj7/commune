@@ -60,9 +60,12 @@ router.post('/send', requireClaimedAgent, sendingHealthGate, warmupGate, emailRa
 
   if (queue) {
     try {
+      // Add send-time jitter to avoid machine-precise timestamps that ISPs
+      // fingerprint as automated sending. 0-2s spread for normal sends.
+      const jitterMs = Math.floor(Math.random() * 2000);
       const job = await queue.add('send', {
         payload: { ...payload, orgId, _messageId: preGeneratedId, thread_id: preGeneratedThreadId },
-      });
+      }, { delay: jitterMs });
       logger.info('v1: Email queued', { orgId, jobId: job.id, to: payload.to, messageId: preGeneratedId });
 
       const responseBody = { data: { id: preGeneratedId, thread_id: preGeneratedThreadId, status: 'queued' } };

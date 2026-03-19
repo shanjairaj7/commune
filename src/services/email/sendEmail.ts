@@ -16,6 +16,7 @@ import { extractEmailAddress, normalizeRecipient } from './helpers';
 import { scheduleGraphExtraction } from '../graphExtractionService';
 import { resolveOrgTier } from '../../lib/tierResolver';
 import { hasFeature } from '../../config/rateLimits';
+import { htmlToText } from 'html-to-text';
 import logger from '../../utils/logger';
 
 const DEFAULT_FROM_EMAIL = process.env.DEFAULT_FROM_EMAIL;
@@ -285,12 +286,18 @@ const sendEmail = async (payload: SendMessagePayload & { orgId?: string }) => {
     : [];
   const bccWithSelf = [...existingBcc, senderEmail];
 
+  // Auto-generate plain text from HTML when not provided.
+  // HTML-only emails are a spam signal — major providers expect a text/plain MIME part.
+  const textContent = payload.text || (payload.html
+    ? htmlToText(payload.html, { wordwrap: 80, selectors: [{ selector: 'img', format: 'skip' }] })
+    : undefined);
+
   const emailPayload = {
     from: fromAddress,
     to: validRecipients.length === recipients.length ? payload.to : validRecipients,
     subject,
     html: payload.html,
-    text: payload.text,
+    text: textContent,
     cc: payload.cc,
     bcc: bccWithSelf,
     headers,

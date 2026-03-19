@@ -2,7 +2,7 @@ import { getRedisClient, isRedisAvailable } from '../lib/redis';
 import logger from '../utils/logger';
 
 export interface SendingHealth {
-  status: 'healthy' | 'warning' | 'paused';
+  status: 'healthy' | 'warning' | 'throttled' | 'paused';
   can_send: boolean;
   sent_24h: number;
   bounced_24h: number;
@@ -42,9 +42,11 @@ class SendingHealthService {
 
   // Thresholds — aligned with industry standards (Postmark, SendGrid, Mailgun)
   private readonly BOUNCE_RATE_PAUSE = 0.05;      // 5% -> pause
+  private readonly BOUNCE_RATE_THROTTLE = 0.04;   // 4% -> throttle (reduce sending speed)
   private readonly BOUNCE_RATE_WARN = 0.03;        // 3% -> warning
   private readonly COMPLAINT_RATE_PAUSE = 0.003;   // 0.3% -> pause
-  private readonly COMPLAINT_RATE_WARN = 0.001;    // 0.1% -> warning
+  private readonly COMPLAINT_RATE_THROTTLE = 0.001; // 0.1% -> throttle (Google's warning threshold)
+  private readonly COMPLAINT_RATE_WARN = 0.0008;   // 0.08% -> warning (below Google's 0.1%)
   private readonly MIN_SENDS_FOR_RATE = 20;        // Need 20+ sends for meaningful rate
   private readonly WINDOW_MS = 24 * 60 * 60 * 1000; // 24-hour rolling window
   private readonly COOLDOWN_MS = 4 * 60 * 60 * 1000; // 4-hour cooldown after pause
@@ -107,7 +109,7 @@ class SendingHealthService {
     ]);
 
     const warnings: string[] = [];
-    let status: 'healthy' | 'warning' | 'paused' = 'healthy';
+    let status: 'healthy' | 'warning' | 'throttled' | 'paused' = 'healthy';
     let canSend = true;
     let pausedReason: string | undefined;
     let resumeAt: string | undefined;
@@ -128,15 +130,26 @@ class SendingHealthService {
         canSend = false;
         pausedReason = `Bounce rate ${(bounceRate * 100).toFixed(2)}% exceeds ${(this.BOUNCE_RATE_PAUSE * 100).toFixed(2)}% threshold`;
         await this.setPaused(orgId);
+      } else if (complaintRate >= this.COMPLAINT_RATE_THROTTLE || bounceRate >= this.BOUNCE_RATE_THROTTLE) {
+        // Throttle: rates are above Google's warning thresholds but below pause.
+        // Sending is allowed but should be slowed down to prevent hitting pause.
+        status = 'throttled';
+        canSend = true;
+        if (complaintRate >= this.COMPLAINT_RATE_THROTTLE) {
+          warnings.push(`Complaint rate ${(complaintRate * 100).toFixed(3)}% exceeds Google's 0.1% threshold — sending throttled`);
+        }
+        if (bounceRate >= this.BOUNCE_RATE_THROTTLE) {
+          warnings.push(`Bounce rate ${(bounceRate * 100).toFixed(2)}% approaching pause threshold — sending throttled`);
+        }
       } else {
         // Check warning thresholds
         if (complaintRate >= this.COMPLAINT_RATE_WARN) {
           status = 'warning';
-          warnings.push(`Complaint rate ${(complaintRate * 100).toFixed(2)}% approaching pause threshold`);
+          warnings.push(`Complaint rate ${(complaintRate * 100).toFixed(3)}% approaching throttle threshold`);
         }
         if (bounceRate >= this.BOUNCE_RATE_WARN) {
           status = 'warning';
-          warnings.push(`Bounce rate ${(bounceRate * 100).toFixed(2)}% approaching pause threshold`);
+          warnings.push(`Bounce rate ${(bounceRate * 100).toFixed(2)}% approaching throttle threshold`);
         }
       }
     }
