@@ -25,6 +25,7 @@ import sesWebhookRoutes from './routes/webhooks/ses';
 import v1Routes from './routes/v1/index';
 import oauthRoutes from './routes/oauth/index';
 import unsubscribeRoutes from './routes/v1/unsubscribe';
+import { mountA2A } from './a2a';
 import startup from './startup';
 import { combinedAuth } from './middleware/combinedAuth';
 import { jwtAuth } from './middleware/jwtAuth';
@@ -119,6 +120,11 @@ app.use('/api/webhooks/twilio', express.urlencoded({ extended: false }), twilioW
 
 // ─── JSON parser for all remaining routes ────────────────────────
 app.use(express.json({ limit: '10mb' }));
+
+// ─── A2A Protocol (Agent-to-Agent interoperability) ──────────────
+// Agent Card at /.well-known/agent-card.json (public, no auth).
+// JSON-RPC at /a2a and REST at /a2a/v1/* (API key auth required).
+mountA2A(app);
 
 // ─── Auth routes ─────────────────────────────────────────────────
 app.use(authRoutes);

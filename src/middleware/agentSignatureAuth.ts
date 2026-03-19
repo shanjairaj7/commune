@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { AgentIdentityService } from '../services/agentIdentityService';
 import { ApiKeyService } from '../services/apiKeyService';
+import { OrganizationService } from '../services/organizationService';
 import logger from '../utils/logger';
 
 export interface V1AuthenticatedRequest extends Request {
@@ -17,7 +18,8 @@ export interface V1AuthenticatedRequest extends Request {
     limits?: { maxInboxes?: number; maxEmailsPerDay?: number; maxSmsPerDay?: number };
     isAdmin?: boolean;
   };
-  authType?: 'apikey' | 'agent';
+  authType?: 'apikey' | 'agent' | 'x402';
+  x402Wallet?: string;
 }
 
 const TIMESTAMP_TOLERANCE_MS = 60_000;
@@ -36,6 +38,20 @@ export const v1CombinedAuth = async (
   res: Response,
   next: NextFunction
 ): Promise<void> => {
+  // --- Path 0: x402 wallet (already verified by x402PaymentGate upstream) ---
+  if (req.authType === 'x402' && req.x402Wallet) {
+    try {
+      const org = await OrganizationService.findOrCreateByWallet(req.x402Wallet);
+      req.orgId = org.id;
+      next();
+      return;
+    } catch (err) {
+      logger.error('x402 org provisioning error', { wallet: req.x402Wallet, err });
+      res.status(500).json({ error: 'Failed to provision organization for wallet' });
+      return;
+    }
+  }
+
   const authHeader = req.headers.authorization;
 
   if (!authHeader) {

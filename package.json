@@ -15,6 +15,7 @@
     "types": "src/types/index.d.ts"
   },
   "dependencies": {
+    "@a2a-js/sdk": "^0.3.13",
     "@aws-sdk/client-s3": "^3.1009.0",
     "@aws-sdk/client-ses": "^3.1009.0",
     "@aws-sdk/client-sesv2": "^3.1009.0",
