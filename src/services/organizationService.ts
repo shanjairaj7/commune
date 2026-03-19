@@ -94,59 +94,6 @@ export class OrganizationService {
     return collection.find({ status: 'active' }).sort({ createdAt: -1 }).toArray();
   }
 
-  /**
-   * Find an existing org by wallet address, or auto-provision one.
-   * Used by x402 wallet-based auth — the wallet address is the identity.
-   *
-   * Uses upsert to prevent race conditions: two simultaneous first-time
-   * payments from the same wallet will not create duplicate orgs.
-   */
-  static async findOrCreateByWallet(walletAddress: string): Promise<Organization> {
-    // Normalize: lowercase for EVM (0x...), preserve case for Solana (base58)
-    const normalized = walletAddress.startsWith('0x') ? walletAddress.toLowerCase() : walletAddress;
-
-    // Validate format
-    const isEvm = /^0x[0-9a-f]{40}$/i.test(walletAddress);
-    const isSolana = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(walletAddress);
-    if (!isEvm && !isSolana) {
-      throw new Error(`Invalid wallet address format: ${walletAddress.slice(0, 20)}...`);
-    }
-
-    const collection = await getCollection<Organization>('organizations');
-    if (!collection) throw new Error('Database not available');
-
-    const existing = await collection.findOne({ walletAddress: normalized, status: 'active' });
-    if (existing) return existing;
-
-    // Auto-provision via upsert to prevent duplicate orgs from concurrent requests
-    const shortAddr = normalized.slice(0, 10);
-    const now = new Date().toISOString();
-    const result = await collection.findOneAndUpdate(
-      { walletAddress: normalized },
-      {
-        $setOnInsert: {
-          id: randomBytes(16).toString('hex'),
-          name: `Wallet ${shortAddr}`,
-          slug: `wallet-${shortAddr}-${randomBytes(4).toString('hex')}`,
-          tier: 'free',
-          walletAddress: normalized,
-          settings: {
-            emailVerificationRequired: false,
-            maxApiKeys: 10,
-            maxUsers: 1,
-          },
-          status: 'active',
-          createdAt: now,
-          updatedAt: now,
-        },
-      },
-      { upsert: true, returnDocument: 'after' },
-    );
-
-    if (!result) throw new Error('Failed to provision organization for wallet');
-    return result;
-  }
-
   static async deactivateOrganization(id: string): Promise<boolean> {
     const collection = await getCollection<Organization>('organizations');
     if (!collection) return false;

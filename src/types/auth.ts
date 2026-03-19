@@ -14,8 +14,6 @@ export interface Organization {
   status: 'active' | 'inactive' | 'suspended';
   createdAt: string;
   updatedAt: string;
-  // x402 wallet-based auth
-  walletAddress?: string;
   // Stripe billing
   stripe_customer_id?: string;
   stripe_subscription_id?: string;

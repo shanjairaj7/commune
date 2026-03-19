@@ -1,6 +1,5 @@
 import { Router } from 'express';
 import { v1CombinedAuth } from '../../middleware/agentSignatureAuth';
-import { x402PaymentGate } from '../../middleware/x402PaymentGate';
 import agentAuthRoutes from './agentAuth';
 import agentManagementRoutes from './agentManagement';
 import domainRoutes from './domains';
@@ -28,16 +27,10 @@ const router = Router();
 // Agent registration endpoints — no auth required (they ARE the auth bootstrap)
 router.use('/auth', agentAuthRoutes);
 
-// x402 payment gate — runs before auth.
-// Requests with Authorization header pass through untouched.
-// Requests without auth get the x402 payment flow (402 → pay → retry).
-router.use(x402PaymentGate);
-
 // All other v1 routes require authentication.
-// Accepts:
+// Accepts EITHER:
 //   Authorization: Bearer comm_xxx...        (existing API key)
-//   Authorization: Agent agt_xxx:base64sig   (Ed25519 agent signing)
-//   x402 wallet (verified upstream)          (wallet address = identity)
+//   Authorization: Agent agt_xxx:base64sig   (new Ed25519 agent signing)
 router.use(v1CombinedAuth);
 
 // Attach apiKey context for permission checks (backward compat)
