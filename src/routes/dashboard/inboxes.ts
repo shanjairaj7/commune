@@ -130,7 +130,7 @@ router.put('/domains/:domainId/inboxes/:inboxId', express.json(), async (req, re
   if (!orgId) {
     return res.status(403).json({ error: 'Organization not found for API key' });
   }
-  const { localPart, agent, webhook, status } = req.body || {};
+  const { localPart, displayName, agent, webhook, status } = req.body || {};
   const existing = await domainStore.getInbox(domainId, inboxId, orgId);
   if (!existing) {
     return res.status(404).json({ error: 'Inbox not found' });
@@ -143,6 +143,7 @@ router.put('/domains/:domainId/inboxes/:inboxId', express.json(), async (req, re
       ...existing,
       id: inboxId,
       localPart: localPart || existing.localPart,
+      displayName: displayName ?? existing.displayName,
       agent: agent ?? existing.agent,
       webhook: webhook ?? existing.webhook,
       status: status ?? existing.status,

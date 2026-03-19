@@ -255,7 +255,7 @@ router.get('/:domainId/inboxes/:inboxId', requirePermission('inboxes:read'), asy
 router.put('/:domainId/inboxes/:inboxId', json(), requirePermission('inboxes:write'), async (req: any, res) => {
   const { domainId, inboxId } = req.params;
   const orgId = req.orgId;
-  const { local_part, localPart, webhook, status } = req.body || {};
+  const { local_part, localPart, webhook, status, displayName, display_name, agent } = req.body || {};
 
   try {
     const existing = await domainStore.getInbox(domainId, inboxId, orgId);
@@ -270,6 +270,8 @@ router.put('/:domainId/inboxes/:inboxId', json(), requirePermission('inboxes:wri
         ...existing,
         id: inboxId,
         localPart: local_part || localPart || existing.localPart,
+        displayName: displayName ?? display_name ?? existing.displayName,
+        agent: agent ?? existing.agent,
         webhook: webhook ?? existing.webhook,
         status: status ?? existing.status,
       },
