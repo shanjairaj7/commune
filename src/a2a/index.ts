@@ -6,7 +6,6 @@ import { MongoTaskStore } from './taskStore';
 import { CommuneAgentExecutor } from './executor';
 import { communeUserBuilder } from './userBuilder';
 import { v1CombinedAuth } from '../middleware/agentSignatureAuth';
-import { x402PaymentGate } from '../middleware/x402PaymentGate';
 import logger from '../utils/logger';
 
 /**
@@ -38,11 +37,9 @@ export function mountA2A(app: Express): void {
   });
 
   // ── JSON-RPC transport: auth required ─────────────────────────────────
-  // The x402 gate + v1CombinedAuth middleware runs first, populating req.orgId.
-  // Then the A2A JSON-RPC handler processes the message.
+  // v1CombinedAuth middleware runs first, populating req.orgId.
   app.use(
     '/a2a',
-    x402PaymentGate,
     v1CombinedAuth,
     jsonRpcHandler({ requestHandler, userBuilder: communeUserBuilder }),
   );
@@ -50,7 +47,6 @@ export function mountA2A(app: Express): void {
   // ── REST transport: auth required ─────────────────────────────────────
   app.use(
     '/a2a/v1',
-    x402PaymentGate,
     v1CombinedAuth,
     restHandler({ requestHandler, userBuilder: communeUserBuilder }),
   );
