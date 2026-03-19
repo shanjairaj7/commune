@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { v1CombinedAuth } from '../../middleware/agentSignatureAuth';
+import { x402PaymentGate } from '../../middleware/x402PaymentGate';
 import agentAuthRoutes from './agentAuth';
 import agentManagementRoutes from './agentManagement';
 import domainRoutes from './domains';
@@ -21,16 +22,22 @@ import voiceAgentRoutes from './voiceAgents';
 import eventsRouter from './events';
 import meRoutes from './me';
 import feedbackRoutes from './feedback';
+import reputationRoutes from './reputation';
 
 const router = Router();
 
 // Agent registration endpoints — no auth required (they ARE the auth bootstrap)
 router.use('/auth', agentAuthRoutes);
 
-// All other v1 routes require authentication.
-// Accepts EITHER:
-//   Authorization: Bearer comm_xxx...        (existing API key)
-//   Authorization: Agent agt_xxx:base64sig   (new Ed25519 agent signing)
+// Public reputation lookup — no auth required (reputation is public by design)
+router.get('/wallet/reputation/:walletAddress', reputationRoutes);
+
+// x402 payment gate — runs before auth.
+// Requests with Authorization header pass through untouched.
+// Requests without auth get the x402 payment flow (402 → pay → retry).
+router.use(x402PaymentGate);
+
+// Auth — handles API key, agent signature, and x402-verified requests.
 router.use(v1CombinedAuth);
 
 // Attach apiKey context for permission checks (backward compat)
@@ -65,5 +72,6 @@ router.use('/phone-numbers', voiceAgentRoutes);
 router.use('/events', eventsRouter);
 router.use('/me', meRoutes);
 router.use('/feedback', feedbackRoutes);
+router.use(reputationRoutes);
 
 export default router;
