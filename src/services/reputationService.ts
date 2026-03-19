@@ -178,5 +178,5 @@ export async function getReputation(walletAddress: string): Promise<ReputationMe
 export async function getWalletOrgs(): Promise<Organization[]> {
   const orgs = await getCollection<Organization>('organizations');
   if (!orgs) return [];
-  return orgs.find({ walletAddress: { $exists: true, $ne: null }, status: 'active' }).toArray();
+  return orgs.find({ walletAddress: { $exists: true, $ne: '' }, status: 'active' } as any).toArray();
 }
