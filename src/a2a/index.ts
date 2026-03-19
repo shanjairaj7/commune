@@ -1,6 +1,6 @@
 import type { Express } from 'express';
-import { DefaultRequestHandler, InMemoryPushNotificationStore } from '@a2a-js/sdk/server';
-import { agentCardHandler, jsonRpcHandler, restHandler } from '@a2a-js/sdk/server/express';
+import { DefaultRequestHandler } from '@a2a-js/sdk/server';
+import { jsonRpcHandler, restHandler } from '@a2a-js/sdk/server/express';
 import { agentCard } from './agentCard';
 import { MongoTaskStore } from './taskStore';
 import { CommuneAgentExecutor } from './executor';
@@ -28,10 +28,14 @@ export function mountA2A(app: Express): void {
   );
 
   // ── Agent Card: public, no auth ───────────────────────────────────────
-  app.use(
-    '/.well-known/agent-card.json',
-    agentCardHandler({ agentCardProvider: async () => agentCard }),
-  );
+  // Direct GET handler (app.use with dot-paths can be unreliable in some Express versions)
+  app.get('/.well-known/agent-card.json', (_req, res) => {
+    res.json(agentCard);
+  });
+  // Also serve at /a2a/agent-card.json as a convenience alias
+  app.get('/a2a/agent-card.json', (_req, res) => {
+    res.json(agentCard);
+  });
 
   // ── JSON-RPC transport: auth required ─────────────────────────────────
   // The x402 gate + v1CombinedAuth middleware runs first, populating req.orgId.
