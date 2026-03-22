@@ -225,9 +225,50 @@ async function getSendCount30d(orgId: string): Promise<number> {
 }
 
 async function findAgentByEmail(email: string): Promise<AgentIdentity | null> {
-  const collection = await getCollection<AgentIdentity>('agent_identities');
-  if (!collection) return null;
-  return collection.findOne({ inboxEmail: email, status: 'active' });
+  // Try registered agent identities first
+  const agentCol = await getCollection<AgentIdentity>('agent_identities');
+  if (agentCol) {
+    const agent = await agentCol.findOne({ inboxEmail: email, status: 'active' });
+    if (agent) return agent;
+  }
+
+  // Fall back to any active inbox
+  const inboxCol = await getCollection<any>('inboxes');
+  if (!inboxCol) return null;
+  const inbox = await inboxCol.findOne({ address: email });
+  if (!inbox) return null;
+
+  return inboxToSyntheticAgent(inbox);
+}
+
+async function findAgentById(id: string): Promise<AgentIdentity | null> {
+  // Try registered agent identities first
+  const agent = await AgentIdentityStore.findById(id);
+  if (agent) return agent;
+
+  // Fall back to inbox
+  const inboxCol = await getCollection<any>('inboxes');
+  if (!inboxCol) return null;
+  const inbox = await inboxCol.findOne({ id });
+  if (!inbox) return null;
+
+  return inboxToSyntheticAgent(inbox);
+}
+
+function inboxToSyntheticAgent(inbox: any): AgentIdentity {
+  const name = inbox.displayName || inbox.agent?.name || inbox.localPart || inbox.address;
+  return {
+    id: inbox.id,
+    agentName: name,
+    agentPurpose: 'Commune inbox',
+    inboxEmail: inbox.address,
+    publicKey: '',
+    orgId: inbox.orgId,
+    userId: '',
+    status: 'active',
+    createdAt: inbox.createdAt || new Date().toISOString(),
+    ownershipStatus: 'unclaimed',
+  } as AgentIdentity;
 }
 
 // ─── Build AgentInfo payload ──────────────────────────────────────────────────
@@ -439,7 +480,7 @@ export class OAuthService {
       throw Object.assign(new Error('Invalid or expired verification code'), { code: 'INVALID_CODE' });
     }
 
-    const agent = await AgentIdentityStore.findById(otpRecord.agentId);
+    const agent = await findAgentById(otpRecord.agentId);
     if (!agent || agent.status !== 'active') {
       throw Object.assign(new Error('Agent account is no longer active'), { code: 'AGENT_INACTIVE' });
     }
@@ -464,7 +505,10 @@ export class OAuthService {
       }),
     ]);
 
-    AgentIdentityStore.updateLastUsed(agent.id).catch(() => {});
+    // updateLastUsed only applies to registered agent identities
+    if (agent.id.startsWith('agt_')) {
+      AgentIdentityStore.updateLastUsed(agent.id).catch(() => {});
+    }
     logger.info('OAuth verification complete', { agentId: agent.id, clientId });
 
     return {
@@ -488,7 +532,7 @@ export class OAuthService {
       throw Object.assign(new Error('Invalid or expired access token'), { code: 'INVALID_TOKEN' });
     }
 
-    const agent = await AgentIdentityStore.findById(tokenRecord.agentId);
+    const agent = await findAgentById(tokenRecord.agentId);
     if (!agent || agent.status !== 'active') {
       throw Object.assign(new Error('Agent account is no longer active'), { code: 'AGENT_INACTIVE' });
     }
@@ -511,7 +555,7 @@ export class OAuthService {
       throw Object.assign(new Error('Invalid or expired refresh token'), { code: 'INVALID_REFRESH_TOKEN' });
     }
 
-    const agent = await AgentIdentityStore.findById(rotated.record.agentId);
+    const agent = await findAgentById(rotated.record.agentId);
     if (!agent || agent.status !== 'active') {
       throw Object.assign(new Error('Agent account is no longer active'), { code: 'AGENT_INACTIVE' });
     }
