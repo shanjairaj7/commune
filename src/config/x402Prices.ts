@@ -7,20 +7,14 @@
  */
 
 export const X402_PRICES: Record<string, string> = {
-  // ── Actions (paid) ─────────────────────────────────────────────
-  'POST /v1/messages/send':      '$0.002',   // $5 = 2,500 emails
-  'POST /v1/inboxes':            '$0.10',    // $5 = 50 inboxes
-  'POST /v1/domains':            '$0.50',    // $5 = 10 domains
-  'POST /v1/attachments/upload': '$0.005',   // $5 = 1,000 uploads
-  'GET /v1/search':              '$0.001',   // $5 = 5,000 searches
-
-  // ── Reads (free) ───────────────────────────────────────────────
-  // GET /v1/messages        — free
-  // GET /v1/threads         — free
-  // GET /v1/threads/:id     — free
-  // GET /v1/me              — free
-  // GET /v1/delivery        — free
-  // GET /v1/dmarc           — free
+  'POST /v1/messages/send':      '$0.003',
+  'POST /v1/inboxes':            '$0.01',
+  'POST /v1/domains':            '$0.05',
+  'POST /v1/attachments/upload': '$0.005',
+  'GET /v1/messages':            '$0.001',
+  'GET /v1/threads':             '$0.001',
+  'GET /v1/threads/:threadId':   '$0.001',
+  'GET /v1/search':              '$0.002',
 };
 
 export const X402_DEFAULT_NETWORK = 'eip155:8453';
