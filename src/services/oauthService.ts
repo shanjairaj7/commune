@@ -232,13 +232,11 @@ async function findAgentByEmail(email: string): Promise<AgentIdentity | null> {
     if (agent) return agent;
   }
 
-  // Fall back to any active inbox
-  const inboxCol = await getCollection<any>('inboxes');
-  if (!inboxCol) return null;
-  const inbox = await inboxCol.findOne({ address: email });
-  if (!inbox) return null;
+  // Fall back to any inbox embedded in a domain document
+  const result = await findInboxByAddress(email);
+  if (!result) return null;
 
-  return inboxToSyntheticAgent(inbox);
+  return inboxToSyntheticAgent(result.inbox, result.domainName, result.orgId);
 }
 
 async function findAgentById(id: string): Promise<AgentIdentity | null> {
@@ -246,24 +244,60 @@ async function findAgentById(id: string): Promise<AgentIdentity | null> {
   const agent = await AgentIdentityStore.findById(id);
   if (agent) return agent;
 
-  // Fall back to inbox
-  const inboxCol = await getCollection<any>('inboxes');
-  if (!inboxCol) return null;
-  const inbox = await inboxCol.findOne({ id });
-  if (!inbox) return null;
+  // Fall back to inbox embedded in a domain document
+  const result = await findInboxById(id);
+  if (!result) return null;
 
-  return inboxToSyntheticAgent(inbox);
+  return inboxToSyntheticAgent(result.inbox, result.domainName, result.orgId);
 }
 
-function inboxToSyntheticAgent(inbox: any): AgentIdentity {
-  const name = inbox.displayName || inbox.agent?.name || inbox.localPart || inbox.address;
+type InboxResult = { inbox: any; domainName: string; orgId: string };
+
+async function findInboxByAddress(email: string): Promise<InboxResult | null> {
+  const [localPart, domainPart] = email.split('@');
+  if (!localPart || !domainPart) return null;
+
+  const domainsCol = await getCollection<any>('domains');
+  if (!domainsCol) return null;
+
+  const domain = await domainsCol.findOne(
+    { name: domainPart, 'inboxes.localPart': localPart },
+    { projection: { id: 1, name: 1, orgId: 1, inboxes: 1 } }
+  );
+  if (!domain) return null;
+
+  const inbox = (domain.inboxes || []).find((i: any) => i.localPart === localPart);
+  if (!inbox) return null;
+
+  return { inbox, domainName: domain.name, orgId: inbox.orgId || domain.orgId };
+}
+
+async function findInboxById(id: string): Promise<InboxResult | null> {
+  const domainsCol = await getCollection<any>('domains');
+  if (!domainsCol) return null;
+
+  const domain = await domainsCol.findOne(
+    { 'inboxes.id': id },
+    { projection: { id: 1, name: 1, orgId: 1, inboxes: 1 } }
+  );
+  if (!domain) return null;
+
+  const inbox = (domain.inboxes || []).find((i: any) => i.id === id);
+  if (!inbox) return null;
+
+  return { inbox, domainName: domain.name, orgId: inbox.orgId || domain.orgId };
+}
+
+function inboxToSyntheticAgent(inbox: any, domainName: string, orgId: string): AgentIdentity {
+  const name = inbox.displayName || inbox.agent?.name || inbox.localPart;
+  const email = `${inbox.localPart}@${domainName}`;
   return {
     id: inbox.id,
     agentName: name,
     agentPurpose: 'Commune inbox',
-    inboxEmail: inbox.address,
+    inboxEmail: email,
     publicKey: '',
-    orgId: inbox.orgId,
+    orgId,
     userId: '',
     status: 'active',
     createdAt: inbox.createdAt || new Date().toISOString(),
