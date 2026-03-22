@@ -1,4 +1,5 @@
 import 'dotenv/config';
+// Commune backend server
 import express from 'express';
 import compression from 'compression';
 import healthRoutes from './routes/health';
